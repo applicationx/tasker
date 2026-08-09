@@ -1,0 +1,29 @@
+[package]
+name = "tasker"
+version = "0.1.0"
+edition = "2024"
+description = "A local-first, daemonless task manager for coding agents and humans"
+license = "MIT"
+
+[dependencies]
+atomic-write-file = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4.5", features = ["derive"] }
+directories = "6"
+fs4 = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+thiserror = "2"
+toml = "0.9"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
