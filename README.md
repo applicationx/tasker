@@ -63,6 +63,325 @@ A project selector (`-p`, `--project`) accepts a prefix, project folder, exact p
 
 Run `tasker --help` for an agent-oriented command map and `tasker <command> --help` for flags and examples.
 
+## Tutorial: autonomous Pi agent workflow
+
+This tutorial is the operating protocol for a Pi agent arriving with no Tasker context. Tasker is designed around a short loop:
+
+```text
+discover -> identify -> inspect -> claim -> implement -> report -> verify -> complete
+```
+
+The filesystem is authoritative. There is no service to start, account to authenticate, or cache to synchronize.
+
+### 1. Verify Tasker and inspect effective configuration
+
+Start every unfamiliar session with non-mutating discovery:
+
+```sh
+tasker --version
+tasker config show -o json
+tasker list projects -o json
+```
+
+If `tasker` is not installed but the agent is inside this repository, bootstrap it with mise:
+
+```sh
+mise trust
+mise install
+mise run check
+mise run install
+```
+
+If the repository is not available and network installation is explicitly allowed:
+
+```sh
+cargo install --git https://github.com/applicationx/tasker.git --locked
+```
+
+Ensure Cargo's binary directory (normally `~/.cargo/bin`) is on `PATH`, then rerun `tasker --version`. Do not install or access the network when the user has not authorized it.
+
+Configuration precedence is:
+
+```text
+TASKER_ROOT -> global projects-root -> ~/tasker
+TASKER_OUTPUT -> global default-output -> human
+```
+
+If the user has provided a projects directory and it is not already effective, configure it once:
+
+```sh
+tasker config set projects-root ~/Development/projects
+tasker config show -o json
+```
+
+For temporary or isolated work, prefer an environment override instead of changing global configuration:
+
+```sh
+export TASKER_ROOT=/tmp/tasker-projects
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:TASKER_ROOT = "C:\Development\projects"
+tasker config show -o json
+```
+
+Do not create or select a project merely because only one seems plausible. Resolve the project in this order:
+
+1. explicit project or task ID supplied by the user;
+2. `TASKER_PROJECT`;
+3. nearest ancestor containing `tasker.yaml`;
+4. `tasker list projects -o json`, then choose only when unambiguous or ask the user.
+
+Inspect the selected project's workflow, relation types, and editable configuration path:
+
+```sh
+tasker get project APP -o json --pretty
+```
+
+If `tasker.yaml` is manually changed, immediately run:
+
+```sh
+tasker validate -p APP -o json
+```
+
+### 2. Establish the agent identity
+
+Choose a stable project-local identity and reuse it across sessions. `ensure user` is idempotent:
+
+```sh
+tasker ensure user "Pi Backend" -p APP --kind agent -o json
+export TASKER_ACTOR=pi-backend
+export TASKER_PROJECT=APP
+```
+
+PowerShell:
+
+```powershell
+tasker ensure user "Pi Backend" -p APP --kind agent -o json
+$env:TASKER_ACTOR = "pi-backend"
+$env:TASKER_PROJECT = "APP"
+```
+
+`TASKER_ACTOR` controls attribution. It is not authentication. Setting `TASKER_PROJECT` is optional when commands contain a task ID or run inside the project directory.
+
+### 3. Find work without racing another agent
+
+Previewing work is useful for inspection:
+
+```sh
+tasker next -p APP --as pi-backend -o json
+tasker list tasks -p APP --ready -o json
+```
+
+The user must already exist for `next --as`, which is why the identity was ensured first. `next` is non-mutating and broader than claim selection.
+
+When ready to take work, avoid a `list -> choose -> claim` race. Claim atomically:
+
+```sh
+tasker claim next -p APP --as pi-backend -o json
+```
+
+Or claim a known task:
+
+```sh
+tasker claim APP-12 --as pi-backend -o json
+```
+
+A claim runs under the project lock, checks ownership and dependencies, assigns the task, and transitions it to the configured `claim_state`. If another agent wins, handle the structured conflict and request work again.
+
+### 4. Read the complete task contract before coding
+
+After claiming, inspect all information needed to execute correctly:
+
+```sh
+tasker get task APP-12 -o json --pretty
+tasker status APP-12 -o json
+tasker acceptance list APP-12 -o json
+tasker dependency check APP-12 -o json
+tasker dependency list APP-12 --recursive -o json
+tasker relation list APP-12 --direction both -o json
+tasker context list APP-12 -o json
+```
+
+Interpret the fields as follows:
+
+- `header`: short identity of the work;
+- `description`: what must be implemented;
+- `acceptance_criteria`: measurable checks that determine completion;
+- `context`: curated background, progress, and decisions from agents;
+- `dependencies`: blocking prerequisite tasks;
+- `relations`: non-blocking structural links;
+- `revision`: optimistic concurrency guard for future mutations.
+
+Do not begin dependency-blocked work unless the user explicitly directs it. Use `status` rather than reproducing workflow rules yourself.
+
+### 5. Report useful progress and decisions
+
+Task context is the durable handoff narrative. Add concise entries while working:
+
+```sh
+tasker context add APP-12 \
+  "Implemented parser and added malformed-input tests" \
+  --kind progress --actor pi-backend
+
+tasker context add APP-12 \
+  "Use recursive descent because the grammar is small and fixed" \
+  --kind decision --actor pi-backend
+
+tasker context add APP-12 \
+  "The upstream format permits comments before the root element" \
+  --kind context --actor pi-backend
+```
+
+Use the kinds consistently:
+
+- `progress`: concrete work performed and verification completed;
+- `decision`: a choice plus enough rationale for the next agent;
+- `context`: discovered constraints or background that affects future work.
+
+Do not use context as a raw terminal log. Record outcomes, file areas, tests, risks, and decisions that another agent needs.
+
+### 6. Use revisions for stale-write protection
+
+Read the current task revision:
+
+```sh
+tasker get task APP-12 -o json
+```
+
+Then guard mutations made from that snapshot:
+
+```sh
+tasker update task APP-12 \
+  --description-file implementation.md \
+  --if-revision 4 \
+  --actor pi-backend
+```
+
+If Tasker returns `revision_conflict`, reload the task, reconcile concurrent changes, and retry with the new revision. Do not blindly overwrite another agent's work.
+
+### 7. Verify and check acceptance criteria
+
+Acceptance criteria are not a to-do guess; check one only after implementation or test evidence verifies it:
+
+```sh
+tasker acceptance list APP-12
+tasker acceptance check APP-12 AC-1 --actor pi-backend
+tasker acceptance check APP-12 AC-2 --actor pi-backend
+tasker status APP-12 -o json
+```
+
+If later evidence invalidates a checkpoint, reopen it:
+
+```sh
+tasker acceptance uncheck APP-12 AC-2 --actor pi-backend
+```
+
+A task with acceptance criteria cannot enter a dependency-satisfying state such as the default `done` until all criteria are checked.
+
+### 8. Complete, block, or hand off the task
+
+When implementation and verification are complete:
+
+```sh
+tasker context add APP-12 \
+  "Completed implementation; cargo test and clippy pass" \
+  --kind progress --actor pi-backend
+
+tasker transition APP-12 done --actor pi-backend -o json
+```
+
+If work cannot proceed, report why and use an allowed blocked transition shown by `status`:
+
+```sh
+tasker context add APP-12 \
+  "Blocked: upstream schema decision is still unresolved" \
+  --kind progress --actor pi-backend
+
+tasker transition APP-12 blocked --actor pi-backend -o json
+```
+
+For a handoff without changing state, leave a context entry and deliberately choose one assignment operation:
+
+```sh
+# Hand directly to a known reviewer
+tasker assign APP-12 pi-reviewer --actor pi-backend
+
+# Or release it for another agent to claim
+tasker unassign APP-12 --actor pi-backend
+```
+
+### 9. Create follow-up work with an explicit contract
+
+Create discovered work rather than hiding it in prose:
+
+```sh
+tasker create task "Handle legacy configuration syntax" -p APP \
+  --description "Add parsing and migration support for the legacy syntax." \
+  --tag parser \
+  --acceptance-criterion "Legacy fixtures parse successfully" \
+  --acceptance-criterion "Migrated output validates against the current schema" \
+  --actor pi-backend -o json
+```
+
+Use the returned task ID. Assuming Tasker returned `APP-13`, connect it to existing work:
+
+```sh
+tasker dependency add APP-13 APP-12 --actor pi-backend
+tasker relation add APP-13 subtask_of APP-3 --actor pi-backend
+```
+
+Remember: `APP-13 depends on APP-12` means the first task waits for the second. Generic relations provide structure but do not affect readiness.
+
+### 10. Validate and inspect audit history
+
+Before ending a larger Tasker management session:
+
+```sh
+tasker validate -p APP -o json
+tasker changelog --task APP-12 --limit 20 -o json
+tasker context list APP-12 -o json
+```
+
+The changelog is the immutable machine audit trail. Task context is the curated narrative for future humans and agents.
+
+### Copy-paste Pi bootstrap checklist
+
+An unfamiliar Pi agent can use this checklist, replacing `APP` and `pi-agent`:
+
+```sh
+tasker --version
+tasker config show -o json
+tasker list projects -o json
+tasker get project APP -o json --pretty
+tasker ensure user "pi-agent" -p APP --kind agent -o json
+export TASKER_ACTOR=pi-agent
+export TASKER_PROJECT=APP
+tasker validate -p APP -o json
+tasker next -p APP --as pi-agent -o json
+tasker claim next -p APP --as pi-agent -o json
+# Read the claimed ID from JSON, then:
+tasker get task APP-12 -o json --pretty
+tasker status APP-12 -o json
+tasker acceptance list APP-12 -o json
+tasker dependency check APP-12 -o json
+tasker context list APP-12 -o json
+```
+
+If any command is unclear, use the complete help hierarchy without external documentation:
+
+```sh
+tasker --help
+tasker claim --help
+tasker acceptance --help
+tasker context --help
+tasker dependency --help
+tasker relation --help
+tasker search --help
+```
+
 ## Workflow
 
 Each project has a human-editable `tasker.yaml`. Its workflow defines:
