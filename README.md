@@ -1,3 +1,5 @@
+![Tasker — fast, local, CLI-first, and AI-ready](docs/assets/tasker-header.png)
+
 # Tasker
 
 Tasker is a small, local-first task manager for coding agents and humans. It is one synchronous Rust executable: no daemon, server, database, account, network request, or prerequisite process. Every project is a self-contained directory whose readable YAML/JSON files work naturally with Git and manual editing.
