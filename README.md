@@ -2,6 +2,9 @@
 
 # Tasker
 
+[![CI](https://github.com/applicationx/tasker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/applicationx/tasker/actions/workflows/ci.yml)
+[![Test coverage](https://codecov.io/gh/applicationx/tasker/graph/badge.svg?branch=main)](https://codecov.io/gh/applicationx/tasker)
+
 Tasker is a small, local-first task manager for coding agents and humans. It is one synchronous Rust executable: no daemon, server, database, account, network request, or prerequisite process. Every project is a self-contained directory whose readable YAML/JSON files work naturally with Git and manual editing.
 
 ## Install
