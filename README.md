@@ -583,4 +583,13 @@ mise run check
 mise run build
 ```
 
+Coverage uses `cargo-llvm-cov` and is required to remain at or above 85% line coverage:
+
+```sh
+mise exec -- cargo install cargo-llvm-cov --locked
+mise run coverage
+```
+
+CI runs the same threshold check and updates the coverage badge after successful pushes to `main`.
+
 See [AGENTS.md](AGENTS.md) for repository rules.
