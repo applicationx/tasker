@@ -45,8 +45,7 @@ jobs:
     name: Measure test coverage
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -66,12 +65,48 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      - name: Generate LCOV report
-        run: cargo llvm-cov --all-features --workspace --locked --lcov --output-path lcov.info
+      - name: Generate coverage report
+        run: cargo llvm-cov --all-features --workspace --locked --json --summary-only --output-path coverage.json
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: lcov.info
-          fail_ci_if_error: true
-          use_oidc: true
+      - name: Generate coverage badge data
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("coverage.json").read_text())
+          percent = report["data"][0]["totals"]["lines"]["percent"]
+          color = (
+              "brightgreen" if percent >= 90 else
+              "green" if percent >= 80 else
+              "yellowgreen" if percent >= 70 else
+              "yellow" if percent >= 60 else
+              "orange" if percent >= 50 else
+              "red"
+          )
+          badge = {
+              "schemaVersion": 1,
+              "label": "coverage",
+              "message": f"{percent:.1f}%",
+              "color": color,
+          }
+          output = Path("coverage-badge/coverage.json")
+          output.parent.mkdir()
+          output.write_text(json.dumps(badge, separators=(",", ":")) + "\n")
+          print(f"Line coverage: {percent:.1f}%")
+          PY
+
+      - name: Publish coverage badge data
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd coverage-badge
+          git init --initial-branch=coverage-badge
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage.json
+          git commit -m "Update coverage badge for ${GITHUB_SHA}"
+          git push --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            coverage-badge
