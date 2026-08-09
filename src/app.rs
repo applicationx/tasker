@@ -235,11 +235,14 @@ fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
 }
 
 fn project_value(project: &Project) -> Result<Value> {
-    to_value(ProjectSummary {
-        name: project.config.name.clone(),
-        prefix: project.config.prefix.clone(),
-        path: project.path.to_string_lossy().to_string(),
-    })
+    Ok(json!({
+        "name": project.config.name,
+        "prefix": project.config.prefix,
+        "path": project.path.to_string_lossy(),
+        "workflow": project.config.workflow,
+        "relations": project.config.relations,
+        "config_file": project.path.join("tasker.yaml").to_string_lossy(),
+    }))
 }
 
 fn list_projects(stats: bool) -> Result<Value> {
@@ -577,19 +580,21 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
         id,
         header: header.trim().to_string(),
         description: input.description.unwrap_or_default(),
-        acceptance_criteria: input
-            .acceptance_criteria
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(|(index, text)| AcceptanceCriterion {
-                id: format!("AC-{}", index + 1),
-                text,
-                completed: false,
-                completed_at: None,
-                completed_by: None,
-            })
-            .collect(),
+        acceptance_criteria: {
+            let values = input.acceptance_criteria.unwrap_or_default();
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(index, text)| AcceptanceCriterion {
+                    id: format!("AC-{}", index + 1),
+                    text,
+                    completed: false,
+                    completed_at: None,
+                    completed_by: None,
+                })
+                .collect()
+        },
+        next_acceptance_number: 1,
         context: vec![],
         state: project.config.workflow.initial_state.clone(),
         assignee: None,
@@ -602,6 +607,7 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
         updated_by: actor.id.clone(),
         revision: 1,
     };
+    task.next_acceptance_number = task.acceptance_criteria.len() as u64 + 1;
     task.normalize();
     storage::write_task(&project, &task)?;
     event(
@@ -1263,13 +1269,14 @@ fn acceptance_add(cli: &Cli, args: &AcceptanceAddArgs) -> Result<Value> {
                     ErrorCategory::Conflict,
                 ));
             }
-            let next = task
+            let existing_max = task
                 .acceptance_criteria
                 .iter()
                 .filter_map(|criterion| criterion.id.strip_prefix("AC-")?.parse::<u64>().ok())
                 .max()
-                .unwrap_or(0)
-                + 1;
+                .unwrap_or(0);
+            let next = task.next_acceptance_number.max(existing_max + 1);
+            task.next_acceptance_number = next + 1;
             let criterion = AcceptanceCriterion {
                 id: format!("AC-{next}"),
                 text: text.clone(),
@@ -2267,6 +2274,7 @@ mod tests {
             header: id.into(),
             description: String::new(),
             acceptance_criteria: vec![],
+            next_acceptance_number: 1,
             context: vec![],
             state: "backlog".into(),
             assignee: None,

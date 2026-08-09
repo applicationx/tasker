@@ -87,6 +87,9 @@ pub struct Task {
     pub description: String,
     #[serde(default)]
     pub acceptance_criteria: Vec<AcceptanceCriterion>,
+    /// Monotonic allocator; prevents AC-N identifiers from being reused after removal.
+    #[serde(default = "default_acceptance_number")]
+    pub next_acceptance_number: u64,
     #[serde(default)]
     pub context: Vec<TaskContextEntry>,
     pub state: String,
@@ -100,6 +103,10 @@ pub struct Task {
     pub updated_by: String,
     pub revision: u64,
 }
+fn default_acceptance_number() -> u64 {
+    1
+}
+
 impl Task {
     pub fn normalize(&mut self) {
         self.tags = self
@@ -112,6 +119,13 @@ impl Task {
         self.tags.dedup();
         self.dependencies.sort_by(|a, b| task_id_cmp(a, b));
         self.dependencies.dedup();
+        let max_acceptance_number = self
+            .acceptance_criteria
+            .iter()
+            .filter_map(|criterion| criterion.id.strip_prefix("AC-")?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        self.next_acceptance_number = self.next_acceptance_number.max(max_acceptance_number + 1);
         self.relations.sort();
         self.relations.dedup();
     }
@@ -296,6 +310,7 @@ mod tests {
             header: "x".into(),
             description: "".into(),
             acceptance_criteria: vec![],
+            next_acceptance_number: 1,
             context: vec![],
             state: "backlog".into(),
             assignee: None,

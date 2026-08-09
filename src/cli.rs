@@ -51,18 +51,32 @@ CORE FLOW
   8. Check verified criteria: tasker acceptance check PEV-12 AC-1 --actor pi-agent
   9. Complete: tasker transition PEV-12 done --actor pi-agent
 
-PROJECT RESOLUTION
+PROJECT RESOLUTION AND CONFIGURATION
 
   Task commands infer a project from --project, then the task-ID prefix,
   TASKER_PROJECT, or the nearest ancestor containing tasker.yaml. Project
   selectors accept a prefix, folder name, exact project name, or path.
+  Inspect workflow states, transitions, and relation types with:
+    tasker get project PEV -o json --pretty
+  Edit the returned config_file (tasker.yaml) to customize them, then run:
+    tasker validate -p PEV -o json
 
 MACHINE USE
 
   Use -o json for compact JSON or -o yaml for YAML. Add --pretty for readable
-  JSON. Machine-mode errors are written to stderr in the selected format.
-  Mutations accept --actor (or TASKER_ACTOR); claim --as is also the actor
-  fallback. Use --if-revision N to reject stale writes.
+  JSON. After parsing, output defaults through TASKER_OUTPUT, global config,
+  then human. Parse errors use explicit --output/TASKER_OUTPUT, otherwise human.
+  Machine errors are written to stderr as {"error":{"code","message",...}}.
+  Exit categories: 2 input, 3 not-found/no-work, 4 conflict, 5 validation or
+  workflow, 6 graph cycle, 7 project/config, 8 filesystem I/O.
+
+ACTORS AND CONCURRENCY
+
+  Mutations run under the exclusive project lock, reload affected files, and
+  atomically replace mutable files. Mutations accept --actor (or TASKER_ACTOR);
+  claim --as is also the actor fallback. Use --if-revision N to reject stale
+  writes. Resolving an unknown actor/claimant can create a user.created event
+  before a later domain check fails; task state itself is never partly claimed.
 
 LEARN MORE
 
@@ -74,10 +88,10 @@ LEARN MORE
 #[derive(Debug, Parser)]
 #[command(name = "tasker", version, about = "Local-first task management for coding agents", long_about = LONG_ABOUT)]
 pub struct Cli {
-    /// Project selector: prefix, folder, exact name, or filesystem path; task IDs can infer it
+    /// Project selector for commands that need one: prefix, folder, exact name, or path
     #[arg(short, long, global = true)]
     pub project: Option<String>,
-    /// Output format; machine errors use the same JSON/YAML format on stderr
+    /// Output format; JSON/YAML errors use the same format on stderr after parsing
     #[arg(short, long, global = true, value_enum)]
     pub output: Option<OutputFormat>,
     /// Actor used for attribution; falls back to TASKER_ACTOR, --as, then OS username
@@ -141,9 +155,9 @@ pub enum Command {
         #[command(subcommand)]
         command: CreateCommand,
     },
-    /// Idempotently ensure a resource exists
+    /// Idempotently ensure a project-local user exists
     #[command(
-        long_about = "Idempotently ensure a resource exists.\n\nUse ensure when an agent may run setup repeatedly. Existing users are returned;\nmissing users are created.\n\nExample:\n  tasker ensure user \"Pi Backend\" -p APP --kind agent -o json"
+        long_about = "Idempotently ensure a project-local user exists.\n\nUse ensure when an agent may run setup repeatedly. Existing users are returned\nwithout modification (including kind); missing users use the requested kind.\n\nExample:\n  tasker ensure user \"Pi Backend\" -p APP --kind agent -o json"
     )]
     Ensure {
         #[command(subcommand)]
@@ -159,7 +173,7 @@ pub enum Command {
     },
     /// Get a project, task, or user
     #[command(
-        long_about = "Get one complete resource.\n\nTask IDs infer their project from the prefix when --project is omitted. User\nselectors accept a stable ID or case-insensitive exact name.\n\nExamples:\n  tasker get project APP -o json\n  tasker get task APP-12 -o json --pretty\n  tasker get user \"Pi Backend\" -p APP -o json"
+        long_about = "Get one complete resource.\n\nTask IDs infer their project from the prefix when --project is omitted. User\nselectors accept a stable ID or case-insensitive exact name. Project output\nexposes workflow states/transitions, relation types, and editable config_file.\n\nExamples:\n  tasker get project APP -o json --pretty\n  tasker get task APP-12 -o json --pretty\n  tasker get user \"Pi Backend\" -p APP -o json"
     )]
     Get {
         #[command(subcommand)]
@@ -175,7 +189,7 @@ pub enum Command {
     },
     /// Show derived workflow, acceptance, dependency, and claim status
     #[command(
-        long_about = "Show information an agent needs before acting: current state and assignee, acceptance completion, unresolved dependencies, allowed transitions, and claimability.\n\nExample:\n  tasker status APP-12 -o json"
+        long_about = "Show information an agent needs before acting: current state and assignee, acceptance completion, unresolved dependencies, allowed transitions, and claimability. claimable means the task is currently unassigned, non-terminal, dependency-ready, and can transition to workflow.claim_state; it does not evaluate a prospective --as user.\n\nExample:\n  tasker status APP-12 -o json"
     )]
     Status(TaskIdArgs),
     /// Assign a task, automatically creating an unknown user
@@ -190,22 +204,22 @@ pub enum Command {
     Unassign(MutateTaskArgs),
     /// Transition a task according to its configured workflow
     #[command(
-        long_about = "Change task state using transitions configured in tasker.yaml. Invalid transitions are rejected. Entering a dependency-satisfying state (default: done) also requires all acceptance criteria to be checked.\n\nExamples:\n  tasker transition APP-12 in_progress --actor pi-agent\n  tasker acceptance list APP-12\n  tasker transition APP-12 done --actor pi-agent --if-revision 8"
+        long_about = "Change task state using transitions configured in tasker.yaml. Invalid transitions are rejected. Entering a dependency-satisfying state (default: done) requires all acceptance criteria to be checked. Unresolved dependencies do not prohibit manual transitions; inspect status/dependency check before completing work. Discover allowed transitions with status and all configured states with get project.\n\nExamples:\n  tasker status APP-12 -o json\n  tasker transition APP-12 in_progress --actor pi-agent\n  tasker acceptance list APP-12\n  tasker transition APP-12 done --actor pi-agent --if-revision 8"
     )]
     Transition(TransitionArgs),
     /// Atomically claim a task, or use `claim next` to claim available work
     #[command(
-        long_about = "Atomically create/resolve the agent user, verify ownership and dependencies, assign the task, and transition it to workflow.claim_state. Use target 'next' to choose the lowest-ID actionable task under the same lock.\n\nExamples:\n  tasker claim APP-12 --as pi-backend -o json\n  tasker claim next -p APP --as pi-backend -o json\n\nConflicts if another user owns the task; blocked tasks cannot be claimed."
+        long_about = "Run under the exclusive project lock: create/resolve the claimant, verify ownership and dependencies, assign the task, and transition it to workflow.claim_state. Use target 'next' to choose the lowest-ID non-terminal actionable task that can transition to claim_state under the same lock. Tasks with unresolved dependencies cannot be claimed. A known terminal task follows configured transitions and may reopen if permitted. Unknown claimant/actor users may be created before a later eligibility check fails; task state itself is never partly claimed.\n\nExamples:\n  tasker claim APP-12 --as pi-backend -o json\n  tasker claim next -p APP --as pi-backend -o json"
     )]
     Claim(ClaimArgs),
     /// List actionable work without claiming it
     #[command(
-        long_about = "Preview non-terminal, dependency-ready work. Without --as, only unassigned tasks are returned. With --as, tasks unassigned or assigned to that user are returned. This command does not claim anything.\n\nExamples:\n  tasker next -p APP -o json\n  tasker next -p APP --as pi-backend --limit 10 -o json"
+        long_about = "List non-terminal, dependency-ready work to start or continue. Without --as, only unassigned tasks are returned. With --as, the user must already exist and tasks unassigned or assigned to that user are returned. This is non-mutating but not an exact preview of claim next: claim selection additionally requires a configured transition to workflow.claim_state.\n\nExamples:\n  tasker next -p APP -o json\n  tasker ensure user \"Pi Backend\" -p APP --kind agent\n  tasker next -p APP --as pi-backend --limit 10 -o json"
     )]
     Next(NextArgs),
     /// Manage first-class task dependencies
     #[command(
-        long_about = "Manage first-class blocking dependencies.\n\n'A depends on B' is stored only on A. A is dependency-blocked until B reaches\na workflow state with dependency_satisfied: true. Cycles are rejected.\n\nExamples:\n  tasker dependency add APP-12 APP-4\n  tasker dependency check APP-12 -o json\n  tasker dependency list APP-12 --recursive\n  tasker dependency list APP-4 --reverse"
+        long_about = "Manage first-class blocking dependencies.\n\n'A depends on B' is stored only on A. A is dependency-blocked until B reaches\na workflow state with dependency_satisfied: true. Both IDs must belong to the\nsame project. Cross-project dependencies and cycles are rejected.\n\nExamples:\n  tasker dependency add APP-12 APP-4\n  tasker dependency check APP-12 -o json\n  tasker dependency list APP-12 --recursive\n  tasker dependency list APP-4 --reverse"
     )]
     Dependency {
         #[command(subcommand)]
@@ -213,7 +227,7 @@ pub enum Command {
     },
     /// Manage measurable task acceptance criteria
     #[command(
-        long_about = "Manage measurable completion checkpoints stored separately from description.\n\nCriteria receive stable AC-N IDs. Checking records actor and timestamp. A task\nwith criteria cannot enter a dependency-satisfying state until all are checked.\n\nTypical flow:\n  tasker acceptance list APP-12\n  tasker acceptance add APP-12 \"All parser tests pass\"\n  tasker acceptance check APP-12 AC-1 --actor pi-agent\n  tasker status APP-12 -o json\n  tasker transition APP-12 done --actor pi-agent"
+        long_about = "Manage measurable completion checkpoints stored separately from description.\n\nCriteria receive monotonic AC-N IDs that are never reused. Checking records\nactor and timestamp. A task with criteria cannot enter a dependency-satisfying\nstate until all are checked.\n\nTypical flow:\n  tasker acceptance list APP-12\n  tasker acceptance add APP-12 \"All parser tests pass\"\n  tasker acceptance check APP-12 AC-1 --actor pi-agent\n  tasker status APP-12 -o json\n  tasker transition APP-12 done --actor pi-agent"
     )]
     Acceptance {
         #[command(subcommand)]
@@ -229,7 +243,7 @@ pub enum Command {
     },
     /// Manage configured generic task relationships
     #[command(
-        long_about = "Manage non-blocking relationships configured in tasker.yaml.\n\nDefaults are subtask_of (inverse parent_of, acyclic) and relates_to (symmetric).\nOnly the outgoing relation is stored; incoming/inverse views are derived.\n\nExamples:\n  tasker relation add APP-12 subtask_of APP-3\n  tasker relation list APP-3 --direction incoming\n  tasker relation remove APP-12 subtask_of APP-3"
+        long_about = "Manage non-blocking relationships configured in tasker.yaml.\n\nDefaults are subtask_of (inverse parent_of, acyclic) and relates_to (symmetric).\nOnly the outgoing relation is stored; incoming/inverse views are query-relative\nderived rows. Remove uses the original stored source, configured type, and target.\n\nExamples:\n  tasker relation add APP-12 subtask_of APP-3\n  tasker relation list APP-3 --direction incoming\n  tasker relation remove APP-12 subtask_of APP-3"
     )]
     Relation {
         #[command(subcommand)]
@@ -245,12 +259,12 @@ pub enum Command {
     },
     /// Query newest-first immutable project audit history
     #[command(
-        long_about = "Query immutable project changelog events, newest first. Filter by task, actor, or exact action. For curated task-level progress and decisions use 'tasker context'.\n\nExamples:\n  tasker changelog -p APP --limit 20\n  tasker changelog --task APP-12 --action task.transitioned -o json\n  tasker changelog -p APP --actor pi-backend -o yaml"
+        long_about = "Query immutable project changelog events, newest first. Filter by task, actor, or case-sensitive exact action. Discover action names from an unfiltered query; common values include project.created, user.created, task.created, task.updated, task.claimed, task.transitioned, task.acceptance_completed, and task.context_added. For curated task-level progress and decisions use 'tasker context'.\n\nExamples:\n  tasker changelog -p APP --limit 20\n  tasker changelog --task APP-12 --action task.transitioned -o json\n  tasker changelog -p APP --actor pi-backend -o yaml"
     )]
     Changelog(ChangelogArgs),
     /// Validate all project files and graph invariants
     #[command(
-        long_about = "Validate manually editable project files and all cross-file invariants: schemas, IDs, workflow states, users, acceptance/context records, dependencies, relations, cycles, metadata, and changelog events. Success returns valid=true; validation problems use exit code 5.\n\nExamples:\n  tasker validate -p APP\n  tasker validate -p APP -o json"
+        long_about = "Validate manually editable project files and selected invariants: typed schemas; task/user filenames and IDs; workflow states; acceptance/context structure; assignees; dependency/relation targets and cycles; task-number metadata; and changelog schema versions. Changelog references and non-assignee attribution fields are not cross-validated. Success returns valid=true; validation problems use exit code 5.\n\nExamples:\n  tasker validate -p APP\n  tasker validate -p APP -o json"
     )]
     Validate,
 }
@@ -262,20 +276,20 @@ pub enum ConfigCommand {
         long_about = "Show effective configuration after environment overrides.\n\nExample:\n  tasker config show -o json"
     )]
     Show,
-    /// Get projects-root or default-output
+    /// Get projects-root, default-output, or config-file
     #[command(
-        long_about = "Get one effective setting. Supported keys: projects-root and default-output.\n\nExamples:\n  tasker config get projects-root\n  tasker config get default-output"
+        long_about = "Get one effective setting. Readable keys: projects-root, default-output, and config-file. Hyphenated or underscored spelling is accepted.\n\nExamples:\n  tasker config get projects-root\n  tasker config get default-output\n  tasker config get config-file"
     )]
     Get {
-        /// Configuration key: projects-root or default-output
+        /// Readable key: projects-root, default-output, or config-file
         key: String,
     },
     /// Persist projects-root or default-output in the OS config directory
     #[command(
-        long_about = "Persist one global setting. Environment variables still take precedence. Paths beginning with ~ are expanded.\n\nExamples:\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"
+        long_about = "Persist projects-root or default-output. Hyphenated/underscored keys are accepted. TASKER_ROOT and TASKER_OUTPUT still take precedence. Paths beginning with ~ are expanded.\n\nExamples:\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"
     )]
     Set {
-        /// Configuration key: projects-root or default-output
+        /// Writable key: projects-root or default-output
         key: String,
         /// New path or output format value
         value: String,
@@ -286,12 +300,12 @@ pub enum ConfigCommand {
 pub enum CreateCommand {
     /// Create a self-contained project directory
     #[command(
-        long_about = "Create one self-contained project with tasker.yaml, metadata, lock, tasks, users, and changelog directories. Prefixes must be unique under projects_root.\n\nExamples:\n  tasker create project \"Example App\" --prefix APP\n  tasker create project \"Example App\" --prefix APP --path ../projects/example-app"
+        long_about = "Create one self-contained project with tasker.yaml, metadata, lock, tasks, users, and changelog directories. PREFIX must match ^[A-Z][A-Z0-9]{1,9}$ and be unique under projects_root. Relative --path values resolve from the current directory. A project outside a direct child of projects_root is not found by list/prefix/name discovery; select it later by path or run inside it.\n\nExamples:\n  tasker create project \"Example App\" --prefix APP\n  tasker create project \"Example App\" --prefix APP --path ../projects/example-app"
     )]
     Project(CreateProjectArgs),
     /// Create a task using flags or JSON/YAML input
     #[command(
-        long_about = "Create a task in workflow.initial_state and allocate the next prefixed ID under the project lock. Description says what to implement; acceptance criteria are measurable checkpoints.\n\nExamples:\n  tasker create task \"Implement parser\" -p APP --description \"Parse config files\" --tag cli\n  tasker create task \"Implement parser\" -p APP --acceptance-criterion \"Tests pass\"\n  tasker create task -p APP -i json --file task.json -o json"
+        long_about = "Create a task in workflow.initial_state and allocate the next prefixed ID under the project lock. Description says what to implement; acceptance criteria are measurable checkpoints. JSON/YAML accepts header (required), description, tags, and acceptance_criteria (string array). Direct flags override corresponding structured values; unknown fields are rejected. --file is used only with -i json|yaml.\n\nExamples:\n  tasker create task \"Implement parser\" -p APP --description \"Parse config files\" --tag cli\n  tasker create task \"Implement parser\" -p APP --acceptance-criterion \"Tests pass\"\n  tasker create task -p APP -i json --file task.json -o json\n  tasker create task -p APP -i yaml < task.yaml -o yaml"
     )]
     Task(CreateTaskArgs),
     /// Create a project-local user
@@ -303,15 +317,15 @@ pub enum CreateCommand {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Examples:\n  tasker create project \"Example App\" --prefix APP\n  tasker create project \"Example App\" --prefix APP --path ../projects/example-app"
+    after_help = "PREFIX: 2-10 uppercase ASCII letters/digits, beginning with a letter.\nRelative --path values resolve from the current directory. Projects outside a direct child of projects_root must later be selected by path or from inside the project.\n\nExamples:\n  tasker create project \"Example App\" --prefix APP\n  tasker create project \"Example App\" --prefix APP --path ../projects/example-app"
 )]
 pub struct CreateProjectArgs {
     /// Human-readable project name
     pub name: String,
-    /// Required unique task-ID prefix (for example PEV)
+    /// Unique 2-10 character uppercase prefix matching ^[A-Z][A-Z0-9]{1,9}$
     #[arg(long)]
     pub prefix: String,
-    /// Project directory; defaults to a slug under projects_root
+    /// Directory path; defaults to a direct-child name slug under projects_root
     #[arg(long)]
     pub path: Option<String>,
 }
@@ -326,10 +340,10 @@ pub enum InputFormat {
 
 #[derive(Debug, Args)]
 pub struct InputArgs {
-    /// Input format; JSON/YAML is read from stdin unless --file is supplied
+    /// Input format; json/yaml reads stdin or --file, while human uses normal flags
     #[arg(short = 'i', long, value_enum, default_value = "human")]
     pub input: InputFormat,
-    /// Read structured input from this file rather than stdin
+    /// Read JSON/YAML input from this file; ignored when --input human
     #[arg(long)]
     pub file: Option<String>,
 }
@@ -373,7 +387,7 @@ pub struct CreateUserArgs {
 pub enum EnsureCommand {
     /// Return an existing user by case-insensitive name, or create one
     #[command(
-        long_about = "Idempotently resolve an exact case-insensitive name or create it. Useful in repeatable agent setup.\n\nExample:\n  tasker ensure user \"Pi Backend\" -p APP --kind agent -o json"
+        long_about = "Idempotently resolve an exact case-insensitive name or create it. An existing user's name and kind are returned unchanged; --kind applies only when creating. Useful in repeatable agent setup.\n\nExample:\n  tasker ensure user \"Pi Backend\" -p APP --kind agent -o json"
     )]
     User(CreateUserArgs),
 }
@@ -382,7 +396,7 @@ pub enum EnsureCommand {
 pub enum ListCommand {
     /// Discover direct child projects without scanning task files
     #[command(
-        long_about = "Discover direct children of projects_root that contain tasker.yaml. By default no task files are read; --stats scans tasks for counts.\n\nExamples:\n  tasker list projects\n  tasker list projects --stats -o json"
+        long_about = "Discover direct children of projects_root having a valid readable tasker.yaml. Malformed project configs are omitted; use validate with a path/name recoverable from YAML to diagnose them. By default no task files are read. --stats scans tasks and reports only states represented by at least one task.\n\nExamples:\n  tasker list projects\n  tasker list projects --stats -o json"
     )]
     Projects {
         /// Include task counts by state (requires scanning tasks)
@@ -434,9 +448,9 @@ pub struct TaskFilterArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GetCommand {
-    /// Get project name, prefix, path, and configuration summary
+    /// Get project identity, workflow, relation types, and editable config path
     #[command(
-        long_about = "Get a project selected by prefix, folder, exact name, or path.\n\nExample:\n  tasker get project APP -o json"
+        long_about = "Get a project selected by prefix, folder, exact name, or path. Output includes workflow states, transitions, relation definitions, and config_file. To customize, edit tasker.yaml and run validate.\n\nExamples:\n  tasker get project APP -o json --pretty\n  tasker validate -p APP -o json"
     )]
     Project {
         /// Prefix, folder, exact project name, or filesystem path
@@ -464,7 +478,7 @@ pub enum GetCommand {
 pub enum UpdateCommand {
     /// Patch only header, description, and tags
     #[command(
-        long_about = "Patch mutable task content only. This cannot change state, assignment, criteria, context, dependencies, relations, IDs, timestamps, or revision directly. Structured JSON/YAML input is a patch.\n\nExamples:\n  tasker update task APP-12 --description-file work.md --if-revision 4\n  echo '{\"header\":\"New header\",\"tags\":[\"backend\"]}' | tasker update task APP-12 -i json"
+        long_about = "Patch mutable task content only. This cannot change state, assignment, criteria, context, dependencies, relations, IDs, timestamps, or revision directly. JSON/YAML is a patch accepting only header, description, and tags; unknown/protected fields are rejected. Direct flags override structured values. --file is used only with -i json|yaml. With both --clear-tags and --tag, supplied tags win.\n\nExamples:\n  tasker update task APP-12 --description-file work.md --if-revision 4\n  echo '{\"header\":\"New header\",\"tags\":[\"backend\"]}' | tasker update task APP-12 -i json\n  tasker update task APP-12 -i yaml --file patch.yaml -o yaml"
     )]
     Task(UpdateTaskArgs),
     /// Rename a user while retaining its stable ID
@@ -493,7 +507,7 @@ pub struct UpdateTaskArgs {
     /// Replace tags with these values; repeat for multiple tags
     #[arg(long = "tag")]
     pub tags: Vec<String>,
-    /// Replace tags with an empty list
+    /// Clear tags when no --tag values are supplied; supplied --tag values win
     #[arg(long)]
     pub clear_tags: bool,
     /// Fail with revision_conflict unless the task currently has this revision
@@ -625,7 +639,7 @@ pub struct DependencyListArgs {
 pub enum AcceptanceCommand {
     /// Add a measurable completion checkpoint and return its stable AC-N ID
     #[command(
-        long_about = "Append a measurable checkpoint. Tasker assigns the next stable AC-N ID and rejects duplicate text.\n\nExample:\n  tasker acceptance add APP-12 \"All parser tests pass\" --actor product-owner"
+        long_about = "Append a measurable checkpoint. Tasker assigns the next monotonic AC-N ID, never reuses removed IDs, and rejects duplicate text.\n\nExample:\n  tasker acceptance add APP-12 \"All parser tests pass\" --actor product-owner"
     )]
     Add(AcceptanceAddArgs),
     /// Remove an acceptance criterion by AC-N ID
@@ -719,12 +733,12 @@ pub enum RelationCommand {
     Add(RelationMutationArgs),
     /// Remove a relationship
     #[command(
-        long_about = "Remove the stored outgoing relationship FROM TYPE TO.\n\nExample:\n  tasker relation remove APP-12 relates_to APP-7"
+        long_about = "Remove the stored outgoing relationship FROM TYPE TO. Incoming list rows are query-relative derived views and may use inverse labels; they cannot be copied directly to remove. Use the original source, configured relation type, and target.\n\nExample:\n  tasker relation remove APP-12 relates_to APP-7"
     )]
     Remove(RelationMutationArgs),
     /// List stored and derived inverse relationships
     #[command(
-        long_about = "List outgoing stored relations and/or incoming derived inverse relations.\n\nExamples:\n  tasker relation list APP-12 --direction outgoing\n  tasker relation list APP-3 --direction incoming\n  tasker relation list APP-12 --direction both -o json"
+        long_about = "List outgoing stored relations and/or query-relative incoming derived inverse relations. Incoming rows may use inverse labels; removing them requires the original stored source, configured type, and target.\n\nExamples:\n  tasker relation list APP-12 --direction outgoing\n  tasker relation list APP-3 --direction incoming\n  tasker relation list APP-12 --direction both -o json"
     )]
     List(RelationListArgs),
 }
@@ -764,12 +778,12 @@ pub struct RelationListArgs {
 pub enum SearchCommand {
     /// Case-insensitive AND-term search over task content with filters
     #[command(
-        long_about = "Search task ID, header, description, acceptance criteria, context, tags, assignee ID, and assignee name. Whitespace-separated terms use AND semantics. Repeated --state uses OR; repeated --tag uses AND.\n\nExamples:\n  tasker search tasks \"oauth token\" -p APP -o json\n  tasker search tasks -p APP --ready --unassigned --tag backend\n  tasker search tasks websocket -p APP --state backlog --state ready --full"
+        long_about = "Search task ID, header, description, acceptance criteria, context, tags, assignee ID, and assignee name. Whitespace-separated terms use AND semantics. QUERY is optional; without it this behaves like filtered list tasks. Repeated --state uses OR; repeated --tag uses AND.\n\nExamples:\n  tasker search tasks \"oauth token\" -p APP -o json\n  tasker search tasks -p APP --ready --unassigned --tag backend\n  tasker search tasks websocket -p APP --state backlog --state ready --full"
     )]
     Tasks(SearchTasksArgs),
     /// Search task ID, actor, action, and changed values in audit history
     #[command(
-        long_about = "Search serialized immutable changelog events using case-insensitive AND terms. For curated progress and decisions use context list.\n\nExample:\n  tasker search changelog \"APP-12 transitioned done\" -p APP -o json"
+        long_about = "Search serialized immutable changelog events using case-insensitive AND terms and return newest matches first. For curated progress and decisions use context list.\n\nExample:\n  tasker search changelog \"APP-12 transitioned done\" -p APP -o json"
     )]
     Changelog(SearchChangelogArgs),
 }
@@ -799,7 +813,7 @@ pub struct ChangelogArgs {
     /// Restrict to actor ID or case-insensitive actor name
     #[arg(long)]
     pub actor: Option<String>,
-    /// Restrict to an exact action, for example task.transitioned
+    /// Case-sensitive exact action; omit to discover names such as task.transitioned
     #[arg(long)]
     pub action: Option<String>,
     /// Maximum newest events to return

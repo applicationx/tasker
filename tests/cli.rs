@@ -33,6 +33,17 @@ fn create_project(root: &Path) {
         &["create", "project", "Demo", "--prefix", "DEM", "-o", "json"],
     );
     assert_eq!(value["prefix"], "DEM");
+    assert_eq!(value["workflow"]["initial_state"], "backlog");
+    assert_eq!(
+        value["relations"]["subtask_of"]["inverse_label"],
+        "parent_of"
+    );
+    assert!(
+        value["config_file"]
+            .as_str()
+            .unwrap()
+            .ends_with("tasker.yaml")
+    );
 }
 
 #[test]
@@ -448,6 +459,39 @@ fn acceptance_criteria_and_context_are_first_class_task_data() {
     assert_eq!(created["acceptance_criteria"][0]["id"], "AC-1");
     assert_eq!(created["acceptance_criteria"][0]["completed"], false);
 
+    let added = ok(
+        temp.path(),
+        &[
+            "acceptance",
+            "add",
+            "DEM-1",
+            "Temporary checkpoint",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(added["acceptance_criteria"][1]["id"], "AC-2");
+    ok(
+        temp.path(),
+        &["acceptance", "remove", "DEM-1", "AC-2", "-o", "json"],
+    );
+    let added_again = ok(
+        temp.path(),
+        &[
+            "acceptance",
+            "add",
+            "DEM-1",
+            "Replacement checkpoint",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(added_again["acceptance_criteria"][1]["id"], "AC-3");
+    ok(
+        temp.path(),
+        &["acceptance", "remove", "DEM-1", "AC-3", "-o", "json"],
+    );
+
     ok(
         temp.path(),
         &[
@@ -556,18 +600,24 @@ fn every_command_level_has_agent_discoverable_help() {
     }
 
     let checks = [
-        ("claim", "Atomically"),
-        ("dependency", "depends on"),
-        ("acceptance", "AC-N"),
+        ("config", "TASKER_ROOT"),
+        ("create project", "^[A-Z][A-Z0-9]{1,9}$"),
+        ("create task", "acceptance_criteria"),
+        ("get project", "config_file"),
+        ("claim", "exclusive project lock"),
+        ("next", "not an exact preview"),
+        ("dependency", "same project"),
+        ("acceptance", "never reused"),
         ("context", "progress"),
-        ("relation", "subtask_of"),
-        ("search", "case-insensitive"),
-        ("transition", "acceptance criteria"),
-        ("validate", "cross-file invariants"),
+        ("relation remove", "derived views"),
+        ("search tasks", "QUERY is optional"),
+        ("changelog", "task.transitioned"),
+        ("transition", "Unresolved dependencies do not prohibit"),
+        ("validate", "selected invariants"),
     ];
     for (command, expected) in checks {
         let output = Command::new(bin())
-            .arg(command)
+            .args(command.split_whitespace())
             .arg("--help")
             .output()
             .unwrap();

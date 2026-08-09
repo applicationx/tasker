@@ -107,7 +107,7 @@ A dependency is satisfied only when its target state has `dependency_satisfied: 
 
 ## Acceptance criteria and task context
 
-Acceptance criteria are separate measurable checkpoints with stable `AC-N` IDs and completion attribution:
+Acceptance criteria are separate measurable checkpoints with monotonic `AC-N` IDs that are never reused, plus completion attribution:
 
 ```sh
 tasker acceptance add APP-1 "A seeded run is deterministic"
@@ -146,10 +146,11 @@ tasker relation remove APP-3 relates_to APP-1
 
 ## Agent claiming
 
-Claims acquire the project lock and perform user creation, ownership/dependency checks, assignment, transition, revision increment, task write, and one `task.claimed` event atomically with respect to other Tasker writers.
+Claims run under the exclusive project lock and serialize ownership/dependency checks, assignment, transition, revision increment, task write, and the `task.claimed` event with respect to other writers. Resolving an unknown claimant or actor may create its user and `user.created` event before a later eligibility check fails; task state itself is never partly claimed.
 
 ```sh
-# Query without mutation
+# Query without mutation; --as must already identify a user
+tasker ensure user "Pi Backend" -p APP --kind agent -o json
 tasker next -p APP --as pi-backend -o json
 
 # Claim a known task or choose the lowest numeric actionable ID
@@ -157,7 +158,7 @@ tasker claim APP-1 --as pi-backend -o json
 tasker claim next -p APP --as pi-backend -o json
 ```
 
-Terminal, dependency-blocked, or other-user-owned tasks are ignored by `claim next`. Competing agents are serialized by `.tasker.lock`; they cannot both claim the same task.
+Terminal tasks, tasks with unresolved dependencies, tasks owned by another user, and tasks unable to transition to `claim_state` are ignored by `claim next`. `next` is broader and is not an exact dry-run of `claim next`. Competing agents are serialized by `.tasker.lock`; they cannot both claim the same task.
 
 ## JSON and YAML
 
@@ -192,7 +193,7 @@ Text matching is case-insensitive substring matching across task content, accept
 
 ## Changelog
 
-Every mutation adds one immutable file to the project-wide changelog (automatic user creation may add its own `user.created` event):
+Every successful state-changing mutation adds one immutable file to the project-wide changelog. No-op operations add no task event. Resolving a new actor may add `user.created` even if the requested domain operation later fails:
 
 ```sh
 tasker changelog -p APP --limit 20
@@ -225,12 +226,13 @@ Do not commit the lock's transient state as meaningful content; the stable empty
 tasker validate -p APP -o json
 ```
 
-Validation checks schemas and malformed files, IDs/filenames/prefixes, workflow states, acceptance criteria and context IDs/content, assignees/users, duplicate or missing dependencies, dependency cycles, relation types/targets/self-relations/acyclic cycles, user-name uniqueness, metadata allocation, and changelog events. Invalid projects return nonzero and machine output contains `{ "valid": false, "errors": [...] }`.
+Validation checks typed schemas, task/user filenames and IDs, workflow states, acceptance/context structure, assignees, duplicate or missing dependencies, dependency cycles, relation types/targets/self-relations/acyclic cycles, user-name uniqueness, task-number metadata, and changelog schema versions. Changelog references and non-assignee attribution fields are not cross-validated. Invalid projects return nonzero and machine output contains `{ "valid": false, "errors": [...] }`.
 
 ## Complete agent flow
 
 ```sh
 tasker list projects -o json
+tasker ensure user "Pi Backend" -p APP --kind agent -o json
 tasker next -p APP --as pi-backend -o json
 tasker claim next -p APP --as pi-backend -o json
 tasker get task APP-7 -o json

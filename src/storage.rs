@@ -254,15 +254,20 @@ pub fn read_task(p: &Project, id: &str) -> Result<Task> {
         )
         .detail("task_id", id.to_string()));
     }
-    read_json(&path)
-        .map_err(|e| AppError::project(format!("Malformed task {}: {}", path.display(), e.message)))
+    let mut task: Task = read_json(&path).map_err(|e| {
+        AppError::project(format!("Malformed task {}: {}", path.display(), e.message))
+    })?;
+    task.normalize();
+    Ok(task)
 }
 pub fn read_tasks(p: &Project) -> Result<Vec<Task>> {
     let mut out: Vec<Task> = vec![];
     for path in json_files(&p.path.join("tasks"))? {
-        out.push(read_json(&path).map_err(|e| {
+        let mut task: Task = read_json(&path).map_err(|e| {
             AppError::project(format!("Malformed task {}: {}", path.display(), e.message))
-        })?)
+        })?;
+        task.normalize();
+        out.push(task);
     }
     out.sort_by(|a, b| crate::model::task_id_cmp(&a.id, &b.id));
     Ok(out)
