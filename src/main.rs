@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::process::ExitCode;
-use tasker::{Cli, OutputFormat, execute, render_error, render_success};
+use tasker::{Cli, OutputFormat, execute, render_command_success, render_error_line};
 
 fn requested_format(args: &[String]) -> OutputFormat {
     for (i, arg) in args.iter().enumerate() {
@@ -31,18 +31,18 @@ fn main() -> ExitCode {
             }
             let format = requested_format(&args);
             let app_error = tasker::AppError::input(error.to_string());
-            eprintln!("{}", render_error(&app_error, format, false));
+            eprint!("{}", render_error_line(&app_error, format, false));
             return ExitCode::from(app_error.exit_code());
         }
     };
     let format = cli.effective_output();
     match execute(&cli) {
         Ok(value) => {
-            println!("{}", render_success(&value, format, cli.pretty));
+            print!("{}", render_command_success(&cli, &value));
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("{}", render_error(&error, format, cli.pretty));
+            eprint!("{}", render_error_line(&error, format, cli.pretty));
             ExitCode::from(error.exit_code())
         }
     }

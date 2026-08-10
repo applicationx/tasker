@@ -18,6 +18,23 @@ pub struct Project {
 pub struct ProjectLock {
     file: File,
 }
+
+pub fn is_symlink_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 impl Drop for ProjectLock {
     fn drop(&mut self) {
         let _ = self.file.unlock();
@@ -139,11 +156,18 @@ pub fn resolve_project(selector: Option<&str>, task_id: Option<&str>) -> Result<
     if let Some(s) = selector {
         return resolve_selector(s);
     }
-    if let Some(id) = task_id
-        && let Some((p, _)) = id.rsplit_once('-')
-        && let Ok(v) = resolve_selector(p)
-    {
-        return Ok(v);
+    if let Some(id) = task_id {
+        let upper = id.to_ascii_uppercase();
+        let prefix = upper
+            .split_once("-R")
+            .or_else(|| upper.split_once("-D"))
+            .map(|(prefix, _)| prefix)
+            .or_else(|| upper.rsplit_once('-').map(|(prefix, _)| prefix));
+        if let Some(prefix) = prefix
+            && let Ok(project) = resolve_selector(prefix)
+        {
+            return Ok(project);
+        }
     }
     if let Ok(s) = std::env::var("TASKER_PROJECT") {
         return resolve_selector(&s);
@@ -387,7 +411,7 @@ fn write_if_changed(path: &Path, b: &[u8]) -> Result<()> {
     }
     atomic_write(path, b)
 }
-fn atomic_write(path: &Path, b: &[u8]) -> Result<()> {
+pub fn atomic_write(path: &Path, b: &[u8]) -> Result<()> {
     let mut f = AtomicWriteFile::options().open(path).map_err(|e| {
         AppError::io(
             e,

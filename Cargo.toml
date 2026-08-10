@@ -9,11 +9,13 @@ license = "MIT"
 atomic-write-file = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4.5", features = ["derive"] }
+cap-std = "3"
 directories = "6"
 fs4 = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
+sha2 = "0.10"
 thiserror = "2"
 toml = "0.9"
 uuid = { version = "1", features = ["v4"] }

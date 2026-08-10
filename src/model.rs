@@ -39,6 +39,13 @@ pub struct RelationType {
 pub struct Meta {
     pub schema_version: u32,
     pub next_task_number: u64,
+    #[serde(default = "default_allocator_number")]
+    pub next_resource_number: u64,
+    #[serde(default = "default_allocator_number")]
+    pub next_decision_number: u64,
+}
+fn default_allocator_number() -> u64 {
+    1
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
@@ -78,6 +85,38 @@ pub struct TaskContextEntry {
     pub created_by: String,
 }
 
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, clap::ValueEnum, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum ContextReferenceKind {
+    Resource,
+    Decision,
+}
+
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, clap::ValueEnum, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum ContextReferenceRole {
+    Implements,
+    #[value(alias = "informed-by")]
+    InformedBy,
+    #[value(alias = "constrained-by")]
+    ConstrainedBy,
+    Verifies,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields)]
+pub struct ContextReference {
+    pub id: String,
+    pub kind: ContextReferenceKind,
+    pub role: ContextReferenceRole,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
@@ -92,6 +131,8 @@ pub struct Task {
     pub next_acceptance_number: u64,
     #[serde(default)]
     pub context: Vec<TaskContextEntry>,
+    #[serde(default)]
+    pub context_refs: Vec<ContextReference>,
     pub state: String,
     pub assignee: Option<String>,
     pub tags: Vec<String>,
@@ -128,8 +169,27 @@ impl Task {
         self.next_acceptance_number = self.next_acceptance_number.max(max_acceptance_number + 1);
         self.relations.sort();
         self.relations.dedup();
+        sort_context_refs(&mut self.context_refs);
     }
 }
+
+pub fn sort_context_refs(references: &mut [ContextReference]) {
+    references.sort_by(|left, right| {
+        let number = |id: &str| {
+            id.rsplit_once("-R")
+                .or_else(|| id.rsplit_once("-D"))
+                .and_then(|(_, number)| number.parse::<u64>().ok())
+                .unwrap_or(u64::MAX)
+        };
+        (&left.kind, number(&left.id), &left.role, &left.id).cmp(&(
+            &right.kind,
+            number(&right.id),
+            &right.role,
+            &right.id,
+        ))
+    });
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, clap::ValueEnum, Default)]
 #[serde(rename_all = "snake_case")]
 #[clap(rename_all = "snake_case")]
@@ -312,6 +372,7 @@ mod tests {
             acceptance_criteria: vec![],
             next_acceptance_number: 1,
             context: vec![],
+            context_refs: vec![],
             state: "backlog".into(),
             assignee: None,
             tags: vec!["Z".into(), "a".into(), "A".into()],
@@ -328,6 +389,24 @@ mod tests {
         assert_eq!(t.dependencies, vec!["DEM-2", "DEM-10"]);
         let _: Task = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
     }
+    #[test]
+    fn legacy_meta_and_task_fields_default_without_migration() {
+        let meta: Meta =
+            serde_json::from_str(r#"{"schema_version":1,"next_task_number":7}"#).unwrap();
+        assert_eq!(meta.next_resource_number, 1);
+        assert_eq!(meta.next_decision_number, 1);
+        let task: Task = serde_json::from_str(
+            r#"{
+            "schema_version":1,"id":"DEM-1","header":"Old","description":"",
+            "acceptance_criteria":[],"context":[],"state":"backlog","assignee":null,
+            "tags":[],"dependencies":[],"relations":[],"created_at":"x","created_by":"u",
+            "updated_at":"x","updated_by":"u","revision":1
+        }"#,
+        )
+        .unwrap();
+        assert!(task.context_refs.is_empty());
+    }
+
     #[test]
     fn yaml_roundtrip() {
         let p = default_project("Demo".into(), "DEM".into());

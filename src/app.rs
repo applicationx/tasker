@@ -1,5 +1,6 @@
 use crate::cli::*;
 use crate::error::{AppError, ErrorCategory, Result};
+use crate::knowledge::model::{DecisionMeta, DecisionStatus};
 use crate::model::*;
 use crate::storage::{self, Project};
 use chrono::{SecondsFormat, Utc};
@@ -11,10 +12,21 @@ pub fn execute(cli: &Cli) -> Result<Value> {
     match &cli.command {
         Command::Config { command } => config_command(command),
         Command::Create { command } => create_command(cli, command),
+        Command::Project { command } => crate::knowledge::commands::project_command(cli, command),
         Command::Ensure { command } => ensure_command(cli, command),
         Command::List { command } => list_command(cli, command),
         Command::Get { command } => get_command(cli, command),
         Command::Update { command } => update_command(cli, command),
+        Command::Archive { command } => match command {
+            ArchiveCommand::Resource(args) => {
+                crate::knowledge::commands::archive_resource(cli, args)
+            }
+        },
+        Command::Decision { command } => {
+            crate::knowledge::commands::decision_lifecycle(cli, command)
+        }
+        Command::ContextRef { command } => crate::knowledge::commands::context_ref(cli, command),
+        Command::Brief(args) => crate::knowledge::commands::brief(cli, args),
         Command::Status(args) => status_command(cli, &args.task),
         Command::Assign(args) => assign_command(cli, args),
         Command::Unassign(args) => unassign_command(cli, args),
@@ -51,7 +63,7 @@ fn config_command(command: &ConfigCommand) -> Result<Value> {
                 }
                 "default-output" | "default_output" => {
                     let _: OutputFormat = value.parse().map_err(|_| {
-                        AppError::input("default-output must be human, json, or yaml")
+                        AppError::input("default-output must be human, markdown, json, or yaml")
                     })?;
                     config.default_output = Some(value.to_ascii_lowercase());
                 }
@@ -68,6 +80,8 @@ fn create_command(cli: &Cli, command: &CreateCommand) -> Result<Value> {
         CreateCommand::Project(args) => create_project(cli, args),
         CreateCommand::Task(args) => create_task(cli, args),
         CreateCommand::User(args) => create_user_command(cli, args, false),
+        CreateCommand::Resource(args) => crate::knowledge::commands::create_resource(cli, args),
+        CreateCommand::Decision(args) => crate::knowledge::commands::create_decision(cli, args),
     }
 }
 
@@ -82,6 +96,7 @@ fn list_command(cli: &Cli, command: &ListCommand) -> Result<Value> {
         ListCommand::Projects { stats } => list_projects(*stats),
         ListCommand::Tasks(filters) => {
             let project = project_for(cli, None)?;
+            let (_lock, project) = lock_and_recover(project)?;
             let tasks = storage::read_tasks(&project)?;
             tasks_output(&project, tasks, filters, None)
         }
@@ -89,20 +104,37 @@ fn list_command(cli: &Cli, command: &ListCommand) -> Result<Value> {
             let project = project_for(cli, None)?;
             to_value(storage::read_users(&project)?)
         }
+        ListCommand::Resources(args) => crate::knowledge::commands::list_resources(cli, args),
+        ListCommand::Decisions(args) => crate::knowledge::commands::list_decisions(cli, args),
     }
 }
 
 fn get_command(cli: &Cli, command: &GetCommand) -> Result<Value> {
     match command {
-        GetCommand::Project { project } => project_value(&storage::resolve_selector(project)?),
+        GetCommand::Project { project } => {
+            let project = storage::resolve_selector(project)?;
+            let _lock = storage::lock_project(&project.path)?;
+            let project = storage::reload_project(&project)?;
+            crate::transaction::recover(&project)?;
+            project_value(&project)
+        }
         GetCommand::Task { task } => {
             let project = project_for(cli, Some(task))?;
             ensure_task_id(&project, task)?;
+            let _lock = storage::lock_project(&project.path)?;
+            let project = storage::reload_project(&project)?;
+            crate::transaction::recover(&project)?;
             to_value(storage::read_task(&project, task)?)
         }
         GetCommand::User { user } => {
             let project = project_for(cli, None)?;
             to_value(resolve_user(&project, user)?)
+        }
+        GetCommand::Resource { resource } => {
+            crate::knowledge::commands::get_resource(cli, resource)
+        }
+        GetCommand::Decision { decision } => {
+            crate::knowledge::commands::get_decision(cli, decision)
         }
     }
 }
@@ -111,6 +143,8 @@ fn update_command(cli: &Cli, command: &UpdateCommand) -> Result<Value> {
     match command {
         UpdateCommand::Task(args) => update_task(cli, args),
         UpdateCommand::User(args) => update_user(cli, args),
+        UpdateCommand::Resource(args) => crate::knowledge::commands::update_resource(cli, args),
+        UpdateCommand::Decision(args) => crate::knowledge::commands::update_decision(cli, args),
     }
 }
 
@@ -118,7 +152,14 @@ fn project_for(cli: &Cli, task_id: Option<&str>) -> Result<Project> {
     storage::resolve_project(cli.project.as_deref(), task_id)
 }
 
-fn now() -> String {
+fn lock_and_recover(project: Project) -> Result<(storage::ProjectLock, Project)> {
+    let lock = storage::lock_project(&project.path)?;
+    let project = storage::reload_project(&project)?;
+    crate::transaction::recover(&project)?;
+    Ok((lock, project))
+}
+
+pub(crate) fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
@@ -192,7 +233,7 @@ fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
         )
         .detail("path", path.to_string_lossy().to_string()));
     }
-    for subdir in ["tasks", "users", "changelog"] {
+    for subdir in ["tasks", "users", "changelog", "resources", "decisions"] {
         fs::create_dir_all(path.join(subdir)).map_err(|e| {
             AppError::io(
                 e,
@@ -217,7 +258,13 @@ fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
         &Meta {
             schema_version: SCHEMA_VERSION,
             next_task_number: 1,
+            next_resource_number: 1,
+            next_decision_number: 1,
         },
+    )?;
+    storage::atomic_write(
+        &project.path.join(crate::knowledge::PROJECT_BRIEF_PATH),
+        crate::knowledge::project_template(&project.config.name).as_bytes(),
     )?;
     let actor = actor_locked(cli, &project, None)?;
     event(
@@ -235,14 +282,20 @@ fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
 }
 
 fn project_value(project: &Project) -> Result<Value> {
-    Ok(json!({
+    let mut value = json!({
         "name": project.config.name,
         "prefix": project.config.prefix,
         "path": project.path.to_string_lossy(),
         "workflow": project.config.workflow,
         "relations": project.config.relations,
         "config_file": project.path.join("tasker.yaml").to_string_lossy(),
-    }))
+    });
+    let summary = crate::knowledge::commands::project_summary(project)?;
+    value
+        .as_object_mut()
+        .unwrap()
+        .extend(summary.as_object().unwrap().clone());
+    Ok(value)
 }
 
 fn list_projects(stats: bool) -> Result<Value> {
@@ -261,6 +314,7 @@ fn list_projects(stats: bool) -> Result<Value> {
     }
     let mut values = Vec::new();
     for project in projects {
+        let (_lock, project) = lock_and_recover(project)?;
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for task in storage::read_tasks(&project)? {
             *counts.entry(task.state).or_default() += 1;
@@ -283,7 +337,11 @@ fn actor_name(cli: &Cli, command_actor: Option<&str>) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-fn actor_locked(cli: &Cli, project: &Project, command_actor: Option<&str>) -> Result<User> {
+pub(crate) fn actor_locked(
+    cli: &Cli,
+    project: &Project,
+    command_actor: Option<&str>,
+) -> Result<User> {
     let name = actor_name(cli, command_actor);
     let (user, created) = ensure_user_locked(project, &name, UserKind::Unknown)?;
     if created {
@@ -427,6 +485,7 @@ struct TaskInput {
     description: Option<String>,
     tags: Option<Vec<String>>,
     acceptance_criteria: Option<Vec<String>>,
+    context_refs: Option<Vec<ContextReference>>,
 }
 
 fn structured_task_input(
@@ -451,7 +510,13 @@ fn structured_task_input(
     let allowed = if protected {
         &["header", "description", "tags"][..]
     } else {
-        &["header", "description", "tags", "acceptance_criteria"][..]
+        &[
+            "header",
+            "description",
+            "tags",
+            "acceptance_criteria",
+            "context_refs",
+        ][..]
     };
     for key in object.keys() {
         if !allowed.contains(&key.as_str()) {
@@ -485,11 +550,20 @@ fn structured_task_input(
             ))
         })?),
     };
+    let context_refs = match object.get("context_refs") {
+        None => None,
+        Some(value) => Some(serde_json::from_value(value.clone()).map_err(|error| {
+            AppError::input(format!(
+                "context_refs must be an array of context references: {error}"
+            ))
+        })?),
+    };
     Ok(TaskInput {
         header,
         description,
         tags,
         acceptance_criteria,
+        context_refs,
     })
 }
 
@@ -539,7 +613,26 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
     let project = project_for(cli, None)?;
     let _lock = storage::lock_project(&project.path)?;
     let project = storage::reload_project(&project)?;
+    crate::transaction::recover(&project)?;
     validate_project_config(&project.config)?;
+    let mut context_refs = if args.context_refs.is_empty() && args.from.is_empty() {
+        input.context_refs.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    for value in &args.context_refs {
+        context_refs.push(crate::knowledge::commands::parse_context_reference(
+            &project, value, None,
+        )?);
+    }
+    for value in &args.from {
+        context_refs.push(crate::knowledge::commands::parse_context_reference(
+            &project,
+            value,
+            Some(ContextReferenceRole::InformedBy),
+        )?);
+    }
+    crate::knowledge::commands::validate_context_references(&project, &mut context_refs)?;
     let actor = actor_locked(cli, &project, None)?;
     let mut meta = storage::read_meta(&project)?;
     let existing_tasks = storage::read_tasks(&project)?;
@@ -596,6 +689,7 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
         },
         next_acceptance_number: 1,
         context: vec![],
+        context_refs,
         state: project.config.workflow.initial_state.clone(),
         assignee: None,
         tags: input.tags.unwrap_or_default(),
@@ -709,8 +803,7 @@ where
 {
     let project = project_for(cli, Some(id))?;
     ensure_task_id(&project, id)?;
-    let _lock = storage::lock_project(&project.path)?;
-    let project = storage::reload_project(&project)?;
+    let (_lock, project) = lock_and_recover(project)?;
     let mut task = storage::read_task(&project, id)?;
     check_revision(&task, revision)?;
     let actor = actor_locked(cli, &project, command_actor)?;
@@ -926,6 +1019,7 @@ fn status_for(task: &Task, tasks: &HashMap<String, Task>, config: &ProjectConfig
 fn status_command(cli: &Cli, id: &str) -> Result<Value> {
     let project = project_for(cli, Some(id))?;
     ensure_task_id(&project, id)?;
+    let (_lock, project) = lock_and_recover(project)?;
     let task = storage::read_task(&project, id)?;
     let tasks = storage::read_tasks(&project)?
         .into_iter()
@@ -979,8 +1073,7 @@ fn claim_users_locked(cli: &Cli, project: &Project, as_user: &str) -> Result<(Us
 fn claim_id(cli: &Cli, id: &str, as_user: &str, revision: Option<u64>) -> Result<Value> {
     let project = project_for(cli, Some(id))?;
     ensure_task_id(&project, id)?;
-    let _lock = storage::lock_project(&project.path)?;
-    let project = storage::reload_project(&project)?;
+    let (_lock, project) = lock_and_recover(project)?;
     let (user, actor) = claim_users_locked(cli, &project, as_user)?;
     let mut task = storage::read_task(&project, id)?;
     check_revision(&task, revision)?;
@@ -1069,8 +1162,7 @@ fn actionable(
 
 fn claim_next(cli: &Cli, args: &ClaimArgs) -> Result<Value> {
     let project = project_for(cli, None)?;
-    let _lock = storage::lock_project(&project.path)?;
-    let project = storage::reload_project(&project)?;
+    let (_lock, project) = lock_and_recover(project)?;
     let (user, actor) = claim_users_locked(cli, &project, &args.as_user)?;
     let tasks_vec = storage::read_tasks(&project)?;
     let tasks: HashMap<String, Task> = tasks_vec
@@ -1097,6 +1189,7 @@ fn claim_next(cli: &Cli, args: &ClaimArgs) -> Result<Value> {
 
 fn next_command(cli: &Cli, args: &NextArgs) -> Result<Value> {
     let project = project_for(cli, None)?;
+    let (_lock, project) = lock_and_recover(project)?;
     let user = args
         .as_user
         .as_deref()
@@ -1202,6 +1295,7 @@ fn dependency_remove(cli: &Cli, args: &PairTaskArgs) -> Result<Value> {
 
 fn dependency_list(cli: &Cli, args: &DependencyListArgs) -> Result<Value> {
     let project = project_for(cli, Some(&args.task))?;
+    let (_lock, project) = lock_and_recover(project)?;
     let task = storage::read_task(&project, &args.task)?;
     let tasks = storage::read_tasks(&project)?;
     let mut ids = if args.reverse {
@@ -1222,6 +1316,7 @@ fn dependency_list(cli: &Cli, args: &DependencyListArgs) -> Result<Value> {
 
 fn dependency_check(cli: &Cli, id: &str) -> Result<Value> {
     let project = project_for(cli, Some(id))?;
+    let (_lock, project) = lock_and_recover(project)?;
     let task = storage::read_task(&project, id)?;
     let tasks: HashMap<String, Task> = storage::read_tasks(&project)?
         .into_iter()
@@ -1241,6 +1336,7 @@ fn acceptance_command(cli: &Cli, command: &AcceptanceCommand) -> Result<Value> {
         AcceptanceCommand::Uncheck(args) => acceptance_set_completed(cli, args, false),
         AcceptanceCommand::List(args) => {
             let project = project_for(cli, Some(&args.task))?;
+            let (_lock, project) = lock_and_recover(project)?;
             let task = storage::read_task(&project, &args.task)?;
             to_value(task.acceptance_criteria)
         }
@@ -1376,6 +1472,7 @@ fn context_command(cli: &Cli, command: &ContextCommand) -> Result<Value> {
         ContextCommand::Add(args) => context_add(cli, args),
         ContextCommand::List(args) => {
             let project = project_for(cli, Some(&args.task))?;
+            let (_lock, project) = lock_and_recover(project)?;
             let task = storage::read_task(&project, &args.task)?;
             let entries: Vec<TaskContextEntry> = task
                 .context
@@ -1611,6 +1708,7 @@ fn relation_remove(cli: &Cli, args: &RelationMutationArgs) -> Result<Value> {
 
 fn relation_list(cli: &Cli, args: &RelationListArgs) -> Result<Value> {
     let project = project_for(cli, Some(&args.task))?;
+    let (_lock, project) = lock_and_recover(project)?;
     storage::read_task(&project, &args.task)?;
     let tasks = storage::read_tasks(&project)?;
     let mut result = Vec::new();
@@ -1658,6 +1756,7 @@ fn search_command(cli: &Cli, command: &SearchCommand) -> Result<Value> {
     match command {
         SearchCommand::Tasks(args) => {
             let project = project_for(cli, None)?;
+            let (_lock, project) = lock_and_recover(project)?;
             let tasks = storage::read_tasks(&project)?;
             tasks_output(&project, tasks, &args.filters, args.query.as_deref())
         }
@@ -1676,6 +1775,8 @@ fn search_command(cli: &Cli, command: &SearchCommand) -> Result<Value> {
                 .collect();
             to_value(events)
         }
+        SearchCommand::Resources(args) => crate::knowledge::commands::search_resources(cli, args),
+        SearchCommand::Decisions(args) => crate::knowledge::commands::search_decisions(cli, args),
     }
 }
 
@@ -1765,13 +1866,20 @@ fn tasks_output(
                     .map(|entry| entry.message.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
+                let context_refs = task
+                    .context_refs
+                    .iter()
+                    .map(|reference| format!("{} {:?}", reference.id, reference.role))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 let text = format!(
-                    "{} {} {} {} {} {} {} {}",
+                    "{} {} {} {} {} {} {} {} {}",
                     task.id,
                     task.header,
                     task.description,
                     acceptance,
                     context,
+                    context_refs,
                     task.tags.join(" "),
                     task.assignee.as_deref().unwrap_or(""),
                     user_name
@@ -1836,7 +1944,7 @@ fn changelog_command(cli: &Cli, args: &ChangelogArgs) -> Result<Value> {
     to_value(events)
 }
 
-fn event(
+pub(crate) fn event(
     project: &Project,
     actor: &User,
     action: &str,
@@ -1900,7 +2008,7 @@ fn validate_command(cli: &Cli) -> Result<Value> {
     let project = match project_for(cli, None) {
         Ok(project) => project,
         Err(error) if error.code == "invalid_project_config" => {
-            let result = json!({"valid": false, "errors": [problem("malformed_project_config", &error.message, json!({}))]});
+            let result = json!({"valid": false, "errors": [problem("malformed_project_config", &error.message, json!({}))], "warnings": []});
             return Err(AppError::new(
                 "validation_failed",
                 "Project validation failed",
@@ -1911,6 +2019,7 @@ fn validate_command(cli: &Cli) -> Result<Value> {
         Err(error) => return Err(error),
     };
     let mut errors = Vec::<Value>::new();
+    let mut warnings = Vec::<Value>::new();
     if let Err(error) = validate_project_config(&project.config) {
         errors.push(problem(&error.code, &error.message, json!({})));
     }
@@ -2160,7 +2269,26 @@ fn validate_command(cli: &Cli) -> Result<Value> {
             )),
         }
     }
-    let result = json!({"valid": errors.is_empty(), "errors": errors});
+    validate_knowledge(&project, &tasks, &mut errors, &mut warnings)?;
+    let problem_key = |value: &Value| {
+        (
+            value["code"].as_str().unwrap_or("").to_string(),
+            value["path"]
+                .as_str()
+                .or_else(|| value["file"].as_str())
+                .unwrap_or("")
+                .to_string(),
+            value["id"]
+                .as_str()
+                .or_else(|| value["task_id"].as_str())
+                .unwrap_or("")
+                .to_string(),
+            value["message"].as_str().unwrap_or("").to_string(),
+        )
+    };
+    errors.sort_by_key(&problem_key);
+    warnings.sort_by_key(problem_key);
+    let result = json!({"valid": errors.is_empty(), "errors": errors, "warnings": warnings});
     if result["valid"] == false {
         Err(AppError::new(
             "validation_failed",
@@ -2171,6 +2299,294 @@ fn validate_command(cli: &Cli) -> Result<Value> {
     } else {
         Ok(result)
     }
+}
+
+fn validate_knowledge(
+    project: &Project,
+    tasks: &[Task],
+    errors: &mut Vec<Value>,
+    warnings: &mut Vec<Value>,
+) -> Result<()> {
+    let project_brief_path = project.path.join(crate::knowledge::PROJECT_BRIEF_PATH);
+    match fs::symlink_metadata(&project_brief_path) {
+        Ok(metadata) if !metadata.file_type().is_file() => errors.push(problem(
+            "project_brief_not_file",
+            "PROJECT.md must be a regular file",
+            json!({"path": project_brief_path.to_string_lossy()}),
+        )),
+        Ok(_) => match fs::read(&project_brief_path) {
+            Ok(bytes) if std::str::from_utf8(&bytes).is_err() => errors.push(problem(
+                "project_brief_not_utf8",
+                "PROJECT.md must contain valid UTF-8 Markdown",
+                json!({"path": project_brief_path.to_string_lossy()}),
+            )),
+            Ok(_) => {}
+            Err(error) => errors.push(problem(
+                "project_brief_unreadable",
+                &format!("PROJECT.md cannot be read: {error}"),
+                json!({"path": project_brief_path.to_string_lossy()}),
+            )),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => errors.push(problem(
+            "project_brief_unreadable",
+            &format!("PROJECT.md cannot be inspected: {error}"),
+            json!({"path": project_brief_path.to_string_lossy()}),
+        )),
+    }
+
+    let missing: Vec<&str> = [
+        crate::knowledge::PROJECT_BRIEF_PATH,
+        "resources",
+        "decisions",
+    ]
+    .into_iter()
+    .filter(|path| !project.path.join(path).exists())
+    .collect();
+    if !missing.is_empty() {
+        warnings.push(problem(
+            "project_knowledge_not_initialized",
+            "Project knowledge paths are not fully initialized",
+            json!({
+                "path": project.path.to_string_lossy(),
+                "missing": missing,
+                "suggestion": format!("tasker project brief init -p {}", project.config.prefix)
+            }),
+        ));
+    }
+
+    let resources = match crate::knowledge::scan_resources(project) {
+        Ok(scan) => {
+            for malformed in scan.errors {
+                errors.push(problem(
+                    &malformed.error.code,
+                    &malformed.error.message,
+                    json!({"path": malformed.path.to_string_lossy()}),
+                ));
+            }
+            scan.records
+        }
+        Err(error) => {
+            errors.push(problem(
+                &error.code,
+                &error.message,
+                json!({"path": project.path.join("resources").to_string_lossy()}),
+            ));
+            Vec::new()
+        }
+    };
+    for resource in &resources {
+        if let Some(source_path) = &resource.metadata.source_path
+            && let Err(error) = crate::knowledge::safe_path::read(&project.path, source_path)
+        {
+            errors.push(problem(
+                &error.code,
+                &error.message,
+                json!({"path": resource.path.to_string_lossy(), "id": resource.metadata.id}),
+            ));
+        }
+    }
+
+    let decisions = match crate::knowledge::scan_decisions(project) {
+        Ok(scan) => {
+            for malformed in scan.errors {
+                errors.push(problem(
+                    &malformed.error.code,
+                    &malformed.error.message,
+                    json!({"path": malformed.path.to_string_lossy()}),
+                ));
+            }
+            scan.records
+        }
+        Err(error) => {
+            errors.push(problem(
+                &error.code,
+                &error.message,
+                json!({"path": project.path.join("decisions").to_string_lossy()}),
+            ));
+            Vec::new()
+        }
+    };
+    let decision_map: HashMap<&str, &DecisionMeta> = decisions
+        .iter()
+        .map(|decision| (decision.metadata.id.as_str(), &decision.metadata))
+        .collect();
+    let mut replacement_for: HashMap<&str, &str> = HashMap::new();
+    for decision in &decisions {
+        for predecessor in &decision.metadata.supersedes {
+            match decision_map.get(predecessor.as_str()) {
+                None => errors.push(problem(
+                    "missing_supersession_target",
+                    "supersedes refers to a missing decision",
+                    json!({"path": decision.path.to_string_lossy(), "id": decision.metadata.id, "target": predecessor}),
+                )),
+                Some(old)
+                    if old.status != DecisionStatus::Superseded
+                        || old.superseded_by.as_deref() != Some(&decision.metadata.id) =>
+                {
+                    errors.push(problem(
+                        "inconsistent_supersession",
+                        "supersedes and superseded_by metadata are inconsistent",
+                        json!({"path": decision.path.to_string_lossy(), "id": decision.metadata.id, "target": predecessor}),
+                    ));
+                }
+                Some(_) => {}
+            }
+            if replacement_for
+                .insert(predecessor.as_str(), decision.metadata.id.as_str())
+                .is_some()
+            {
+                errors.push(problem(
+                    "multiple_decision_replacements",
+                    "A decision has multiple replacement decisions",
+                    json!({"id": predecessor}),
+                ));
+            }
+        }
+        if let Some(successor) = &decision.metadata.superseded_by {
+            match decision_map.get(successor.as_str()) {
+                Some(new) if new.supersedes.contains(&decision.metadata.id) => {}
+                _ => errors.push(problem(
+                    "inconsistent_supersession",
+                    "superseded_by has no matching successor edge",
+                    json!({"path": decision.path.to_string_lossy(), "id": decision.metadata.id, "target": successor}),
+                )),
+            }
+        }
+    }
+    for decision in &decisions {
+        let mut seen = HashSet::new();
+        let mut stack = decision.metadata.supersedes.clone();
+        while let Some(id) = stack.pop() {
+            if id == decision.metadata.id {
+                errors.push(problem(
+                    "supersession_cycle",
+                    "Decision supersession graph contains a cycle",
+                    json!({"id": decision.metadata.id}),
+                ));
+                break;
+            }
+            if seen.insert(id.clone())
+                && let Some(next) = decision_map.get(id.as_str())
+            {
+                stack.extend(next.supersedes.clone());
+            }
+        }
+    }
+
+    let resource_ids: HashSet<&str> = resources
+        .iter()
+        .map(|resource| resource.metadata.id.as_str())
+        .collect();
+    let decision_ids: HashSet<&str> = decisions
+        .iter()
+        .map(|decision| decision.metadata.id.as_str())
+        .collect();
+    for task in tasks {
+        let mut targets = HashSet::new();
+        for reference in &task.context_refs {
+            let canonical = match reference.kind {
+                ContextReferenceKind::Resource => {
+                    crate::knowledge::canonical_id(project, &reference.id, 'R')
+                }
+                ContextReferenceKind::Decision => {
+                    crate::knowledge::canonical_id(project, &reference.id, 'D')
+                }
+            };
+            if !matches!(canonical.as_ref(), Ok(canonical) if canonical == &reference.id) {
+                errors.push(problem(
+                    "context_ref_kind_mismatch",
+                    "Context reference kind, project, or canonical ID is invalid",
+                    json!({"task_id": task.id, "id": reference.id}),
+                ));
+            }
+            let exists = match reference.kind {
+                ContextReferenceKind::Resource => resource_ids.contains(reference.id.as_str()),
+                ContextReferenceKind::Decision => decision_ids.contains(reference.id.as_str()),
+            };
+            if !exists {
+                errors.push(problem(
+                    "dangling_context_ref",
+                    "Context reference target does not exist",
+                    json!({"task_id": task.id, "id": reference.id}),
+                ));
+            }
+            if !targets.insert(reference.id.as_str()) {
+                errors.push(problem(
+                    "duplicate_context_ref",
+                    "Task contains duplicate knowledge targets",
+                    json!({"task_id": task.id, "id": reference.id}),
+                ));
+            }
+        }
+        let mut sorted_references = task.context_refs.clone();
+        sort_context_refs(&mut sorted_references);
+        if sorted_references != task.context_refs {
+            errors.push(problem(
+                "noncanonical_context_refs",
+                "Task context references must be sorted by kind and numeric ID",
+                json!({"task_id": task.id}),
+            ));
+        }
+    }
+
+    if let Ok(meta) = storage::read_meta(project) {
+        let max_resource = resources
+            .iter()
+            .filter_map(|item| crate::knowledge::model::numeric_id(&item.metadata.id, 'R'))
+            .max()
+            .unwrap_or(0);
+        let max_decision = decisions
+            .iter()
+            .filter_map(|item| crate::knowledge::model::numeric_id(&item.metadata.id, 'D'))
+            .max()
+            .unwrap_or(0);
+        if meta.next_resource_number == 0 || meta.next_resource_number <= max_resource {
+            errors.push(problem(
+                "invalid_next_resource_number",
+                "meta.json next_resource_number must exceed all resource IDs",
+                json!({"next_resource_number": meta.next_resource_number, "max_resource_number": max_resource}),
+            ));
+        }
+        if meta.next_decision_number == 0 || meta.next_decision_number <= max_decision {
+            errors.push(problem(
+                "invalid_next_decision_number",
+                "meta.json next_decision_number must exceed all decision IDs",
+                json!({"next_decision_number": meta.next_decision_number, "max_decision_number": max_decision}),
+            ));
+        }
+    }
+
+    let transactions = project.path.join(".tasker-transactions");
+    let transaction_metadata = fs::symlink_metadata(&transactions);
+    if !matches!(
+        transaction_metadata.as_ref(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ) {
+        let inspection_valid = match crate::transaction::inspect_pending(project) {
+            Ok(()) => true,
+            Err(error) => {
+                errors.push(problem(
+                    &error.code,
+                    &error.message,
+                    json!({"path": transactions.to_string_lossy()}),
+                ));
+                false
+            }
+        };
+        if inspection_valid
+            && fs::read_dir(&transactions)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(false)
+        {
+            errors.push(problem(
+                "transaction_recovery_pending",
+                "Knowledge transaction artifacts require recovery before mutation",
+                json!({"path": transactions.to_string_lossy()}),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn problem(code: &str, message: &str, details: Value) -> Value {
@@ -2276,6 +2692,7 @@ mod tests {
             acceptance_criteria: vec![],
             next_acceptance_number: 1,
             context: vec![],
+            context_refs: vec![],
             state: "backlog".into(),
             assignee: None,
             tags: vec![],

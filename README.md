@@ -515,6 +515,151 @@ tasker search tasks -p APP --dependency-blocked
 
 Text matching is case-insensitive substring matching across task content, acceptance criteria, and context; whitespace-separated terms use AND semantics. Repeated states use OR, repeated tags use AND. Compact results are limited to 50 by default. `tasker status APP-1` returns unresolved dependencies, acceptance completion, allowed transitions, and claimability.
 
+## Project knowledge and agent briefs
+
+Tasker keeps six related concepts distinct:
+
+1. **`PROJECT.md`** records project purpose, goals, constraints, architecture, and direction.
+2. **Resources** catalog supporting Markdown, either managed by Tasker or referenced live from a safe project-relative path.
+3. **Decisions** record proposed and settled product/architecture choices with rationale and consequences.
+4. **Task `context_refs`** explicitly link execution work to relevant resources and decisions.
+5. **Task context** is the append-only curated execution narrative: background, progress, and task-level choices.
+6. **The changelog** is the immutable machine audit trail of mutations.
+
+`tasker brief` assembles those authoritative sources for an agent; it is a generated view, not a seventh stored source.
+
+### Copy-paste planning-to-execution workflow
+
+```sh
+# Establish project direction and reusable planning knowledge.
+tasker project brief show -p APP -o markdown
+tasker create resource "Requirements" -p APP --kind requirement --status active --file requirements.md
+tasker create resource "Architecture" -p APP --kind design --path docs/architecture.md
+tasker create decision "Keep files authoritative" -p APP -o json
+tasker decision accept APP-D1
+
+# Turn the plan into linked execution work and inspect the assembled contract.
+tasker create task "Implement requirements" -p APP \
+  --description "Implement the accepted filesystem-backed plan." \
+  --from APP-R1 --context-ref APP-D1:constrained_by \
+  --acceptance-criterion "Focused tests pass" -o json
+tasker brief APP-1 -o markdown
+tasker claim APP-1 --as pi-agent -o json
+
+# Report, verify, complete, and audit.
+tasker context add APP-1 "Implemented the planned vertical slice" --kind progress --actor pi-agent
+tasker acceptance check APP-1 AC-1 --actor pi-agent
+tasker transition APP-1 done --actor pi-agent -o json
+tasker changelog --task APP-1 -o json
+tasker validate -p APP -o json
+```
+
+Every new project has a root `PROJECT.md` with Purpose, Goals, Non-goals, Constraints, Architecture, Current direction, and Open questions sections. It has no frontmatter, so humans and agents can edit it directly. Legacy projects initialize it explicitly:
+
+```sh
+tasker project brief show -p APP -o markdown
+tasker project brief path -p APP -o json
+tasker project brief init -p APP
+tasker project brief set -p APP --file updated-project.md
+```
+
+Resources receive monotonic project-prefixed IDs (`APP-R1`) and use exactly these kinds: `brief`, `requirement`, `design`, `research`, `plan`, and `reference`. Status is `draft`, `active`, or `archived`. A managed record owns its body; a referenced record has `source_path` and reopens that current project file for every get, search, validation, and brief:
+
+```sh
+tasker create resource "CLI design" -p APP --kind design --status active --file cli-design.md
+tasker create resource "Existing architecture" -p APP --kind design --path docs/architecture.md
+tasker list resources -p APP
+tasker get resource APP-R2 -o json
+tasker update resource APP-R1 --tag cli --include-in-project-brief --if-revision 1
+tasker archive resource APP-R1
+tasker search resources "atomic output" -p APP --full -o json
+```
+
+A resource file has typed frontmatter followed by a catalog body. `source_path` is absent for managed resources and present for referenced resources:
+
+```markdown
+---
+id: APP-R1
+title: CLI design
+kind: design
+status: active
+tags:
+- cli
+include_in_project_brief: true
+created_at: 2026-08-09T18:30:00.000Z
+updated_at: 2026-08-09T18:30:00.000Z
+created_by: pi-agent
+updated_by: pi-agent
+revision: 1
+---
+# CLI design
+
+Commands emit deterministic output.
+```
+
+Referenced paths are stored with `/` separators. Absolute, rooted, drive/UNC, NUL, parent-component, missing, non-file, escaping-symlink, non-UTF-8, and over-1-MiB sources are rejected. Tasker reads through a capability rooted at the project and never changes the referenced source.
+
+Decisions receive IDs such as `APP-D1`, default to `proposed` and project scope, and require these ATX headings in order: Context, Options considered, Decision, Rationale, and Consequences. Scope is `project` or `linked`; status is `proposed`, `accepted`, `rejected`, or `superseded`:
+
+```sh
+tasker create decision "Keep filesystem authority" -p APP
+# Or supply a completed five-section body:
+tasker create decision "Keep filesystem authority" -p APP --scope project --file decision.md
+tasker decision accept APP-D1
+tasker decision reject APP-D2
+tasker decision supersede APP-D1 --with APP-D3 --if-revision 2 --with-if-revision 2
+tasker search decisions filesystem -p APP --full -o json
+```
+
+Decision metadata records `id`, `title`, `status`, `scope`, canonical `tags`, creation/update attribution, nullable `decided_at`/`decided_by`, `supersedes`, nullable `superseded_by`, and `revision`. Its body follows this contract:
+
+```markdown
+# Context
+
+Why a choice is needed.
+
+# Options considered
+
+## Option one
+
+Trade-offs.
+
+# Decision
+
+The chosen direction.
+
+# Rationale
+
+Why it is preferred.
+
+# Consequences
+
+Resulting constraints and work.
+```
+
+Only proposed decisions permit title, body, or scope changes. Settled decisions permit tags only. Supersession requires two accepted decisions and updates the predecessor status/backlink and replacement `supersedes` list as one recoverable batch under `.tasker.lock`. Before/after images are transient under `.tasker-transactions`; the immutable event containing `transaction_id` is the commit marker. A later mutation rolls an uncommitted batch back or completes a committed batch, and refuses to overwrite unexpected manual edits. `validate` only reports pending artifacts; it never recovers them.
+
+Tasks store authoritative links in `context_refs`, separate from append-only task narrative context. Kinds are `resource` and `decision`; roles are `implements`, `informed_by`, `constrained_by`, and `verifies`:
+
+```sh
+tasker create task "Implement search" -p APP \
+  --context-ref APP-R1:implements --from APP-D1
+tasker context-ref add APP-1 APP-D1 --role constrained_by
+tasker context-ref list APP-1 -o json
+tasker context-ref reverse APP-D1 -o json
+```
+
+Generate a deterministic current snapshot without an index:
+
+```sh
+tasker brief -p APP -o markdown
+tasker brief APP-1 --max-bytes 50000 -o json --pretty
+```
+
+Project briefs and task briefs have one stable structured shape. Inclusion priority is project/task identity; task description and acceptance criteria; linked accepted decisions; linked active resources; dependency state and relations; task context; accepted project decisions; `PROJECT.md`; linked historical decisions; requested archived resources; then proposed decisions and summaries. Archived resource metadata is excluded unless `--include-archived` is explicit. The byte cap applies to the exact final JSON, YAML, human, or Markdown bytes including its newline. Complete lower-priority bodies are omitted before metadata, linked accepted-decision and non-archived-resource metadata is retained, every omission is recorded under `truncation.omitted`, human/Markdown output displays a truncation notice, and an impossibly small limit returns `brief_limit_too_small` rather than malformed output.
+
+Knowledge mutations support JSON/YAML structured input with `-i` and `--input-file`; `--file` always means Markdown body on these commands, and direct flags override structured fields. Markdown frontmatter rejects unknown fields. Metadata-only updates preserve body bytes, filenames do not change when titles do, no-op updates preserve revision and emit no event, and archived IDs are never reused.
+
 ## Changelog
 
 Every successful state-changing mutation adds one immutable file to the project-wide changelog. No-op operations add no task event. Resolving a new actor may add `user.created` even if the requested domain operation later fails:
@@ -526,17 +671,20 @@ tasker changelog -p APP --actor pi-backend --action task.transitioned
 tasker search changelog "APP-1 done" -p APP
 ```
 
-Events snapshot actor ID/name and meaningful changed values. Current resource files, not events, remain authoritative.
+Events snapshot actor ID/name and meaningful changed values. Knowledge actions are exactly `project.brief.created`, `project.brief.updated`, `resource.created`, `resource.updated`, `resource.archived`, `decision.created`, `decision.updated`, `decision.accepted`, `decision.rejected`, `decision.superseded`, `task.context_ref.added`, and `task.context_ref.removed`. Their changes contain IDs, paths, revisions, SHA-256 hashes, byte counts, and transaction IDs—not complete Markdown bodies or referenced source content. Current files, not events, remain authoritative.
 
 ## Storage and Git
 
 ```text
 example-app/
-├── tasker.yaml              # human-editable workflow and relations
-├── meta.json                # next task number
-├── .tasker.lock             # stable lock target
-├── tasks/APP-1.json         # one authoritative file per task
-├── users/pi-backend.json    # one file per local identity
+├── tasker.yaml                    # human-editable workflow and relations
+├── meta.json                      # next task/resource/decision numbers
+├── PROJECT.md                     # project purpose and direction
+├── .tasker.lock                   # stable lock target
+├── resources/APP-R1-cli-design.md # managed/referenced resource frontmatter + catalog body
+├── decisions/APP-D1-storage.md    # decision frontmatter + required sections
+├── tasks/APP-1.json               # one authoritative task, including context_refs
+├── users/pi-backend.json          # one file per local identity
 └── changelog/<time>_<uuid>.json
 ```
 
@@ -550,7 +698,9 @@ Do not commit the lock's transient state as meaningful content; the stable empty
 tasker validate -p APP -o json
 ```
 
-Validation checks typed schemas, task/user filenames and IDs, workflow states, acceptance/context structure, assignees, duplicate or missing dependencies, dependency cycles, relation types/targets/self-relations/acyclic cycles, user-name uniqueness, task-number metadata, and changelog schema versions. Changelog references and non-assignee attribution fields are not cross-validated. Invalid projects return nonzero and machine output contains `{ "valid": false, "errors": [...] }`.
+Validation always returns `{ "valid", "errors", "warnings" }`. It checks typed schemas; task/user/resource/decision filenames and IDs; workflow and graph invariants; acceptance, narrative context, and `context_refs`; canonical frontmatter tags/timestamps/revisions; safe live sources; decision sections, lifecycle attribution, and bidirectional acyclic supersession; all three allocators; transaction artifacts; and changelog schema versions. Errors exit 5. A legacy project missing `PROJECT.md`, `resources/`, or `decisions/` remains valid and receives `project_knowledge_not_initialized` with an initialization suggestion; warnings exit 0 and validation performs no repair or initialization.
+
+Knowledge frontmatter is YAML bounded by exact `---` lines and rejects unknown fields. IDs must match each filename's leading ID (`APP-R1[-slug].md` or `APP-D1[-slug].md`). Existing schema-v1 `meta.json` files default new counters to 1, and existing task files default `context_refs` to an empty array. Once a new counter or task link is persisted, older Tasker binaries with strict unknown-field handling may reject that file; this is the documented downgrade boundary.
 
 ## Complete agent flow
 
