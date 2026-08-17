@@ -1,0 +1,48 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - link "Tasker projects" [ref=e5] [cursor=pointer]:
+        - /url: "#/projects"
+        - generic [ref=e6]: T
+        - generic [ref=e7]:
+          - strong [ref=e8]: Tasker
+          - generic [ref=e9]: Local workspace
+      - generic [ref=e10]:
+        - generic [ref=e11]:
+          - generic [ref=e12]: Project
+          - combobox "Switch project" [ref=e13]:
+            - option "Projects" [selected]
+            - option "WEB · Web Demo"
+        - generic [ref=e14]:
+          - generic [ref=e15]: Acting as
+          - combobox "Acting as" [disabled] [ref=e16]:
+            - option "No project user" [selected]
+        - generic [ref=e17]: The selected identity is recorded as attribution. It is not authentication.
+        - button "Refresh" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ↻
+    - complementary [ref=e21]:
+      - navigation "Primary navigation" [ref=e22]:
+        - link "Projects" [ref=e23] [cursor=pointer]:
+          - /url: "#/projects"
+          - generic [ref=e24]: ⌂
+      - generic [ref=e26]: Local filesystem is authoritative
+    - main [ref=e29]:
+      - generic [ref=e31]:
+        - generic [ref=e33]:
+          - paragraph [ref=e34]: Workspace
+          - heading "Choose a project" [active] [level=1] [ref=e35]
+          - paragraph [ref=e36]: Projects are read directly from your configured Tasker root. Manual edits and Git checkouts appear on refresh.
+        - generic "Tasker projects" [ref=e37]:
+          - link "WEB Web Demo 1 task \\\\?\\C:\\Users\\jonas\\AppData\\Local\\Temp\\tmp.d7fdge1RDG\\web-demo 1 backlog" [ref=e38] [cursor=pointer]:
+            - /url: "#/p/WEB/overview"
+            - generic [ref=e39]:
+              - generic [ref=e40]:
+                - text: WEB
+                - heading "Web Demo" [level=2] [ref=e41]
+              - generic [ref=e42]: 1 task
+            - paragraph [ref=e43]: \\?\C:\Users\jonas\AppData\Local\Temp\tmp.d7fdge1RDG\web-demo
+            - generic [ref=e45]:
+              - strong [ref=e46]: "1"
+              - text: backlog

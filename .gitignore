@@ -1,3 +1,6 @@
 /target/
 *.tmp
 .tasker.lock.tmp
+
+# Windows reserved-name artifact created by local tooling
+NUL

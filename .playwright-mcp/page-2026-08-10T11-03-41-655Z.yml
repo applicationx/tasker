@@ -1,0 +1,131 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - link "Tasker projects" [ref=e5] [cursor=pointer]:
+        - /url: "#/projects"
+        - generic [ref=e6]: T
+        - generic [ref=e7]:
+          - strong [ref=e8]: Tasker
+          - generic [ref=e9]: Local workspace
+      - generic [ref=e10]:
+        - generic [ref=e11]:
+          - generic [ref=e12]: Project
+          - combobox "Switch project" [ref=e13]:
+            - option "Projects"
+            - option "WEB · Web Demo" [selected]
+        - generic [ref=e14]:
+          - generic [ref=e15]: Acting as
+          - combobox "Acting as" [ref=e16]:
+            - option "web-tester (web-tester)" [selected]
+            - option "Web Tester (web-tester-2)"
+        - generic [ref=e17]: The selected identity is recorded as attribution. It is not authentication.
+        - button "Refresh" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ↻
+    - complementary [ref=e21]:
+      - navigation "Primary navigation" [ref=e22]:
+        - link "Projects" [ref=e23] [cursor=pointer]:
+          - /url: "#/projects"
+          - generic [ref=e24]: ⌂
+        - generic [ref=e48]:
+          - paragraph [ref=e49]: Web Demo
+          - link "Overview" [ref=e50] [cursor=pointer]:
+            - /url: "#/p/WEB/overview"
+            - generic [ref=e51]: ◫
+          - link "Board" [ref=e53] [cursor=pointer]:
+            - /url: "#/p/WEB/board"
+            - generic [ref=e54]: ▥
+          - link "Tasks" [ref=e56] [cursor=pointer]:
+            - /url: "#/p/WEB/tasks"
+            - generic [ref=e57]: ☷
+          - link "Dependencies" [ref=e59] [cursor=pointer]:
+            - /url: "#/p/WEB/dependencies"
+            - generic [ref=e60]: ⌁
+          - link "Knowledge" [ref=e62] [cursor=pointer]:
+            - /url: "#/p/WEB/knowledge"
+            - generic [ref=e63]: ◇
+          - link "History" [ref=e65] [cursor=pointer]:
+            - /url: "#/p/WEB/history"
+            - generic [ref=e66]: ◷
+          - link "Workflow" [ref=e68] [cursor=pointer]:
+            - /url: "#/p/WEB/workflow"
+            - generic [ref=e69]: ⇢
+      - generic [ref=e26]: Local filesystem is authoritative
+    - main [ref=e29]:
+      - generic [ref=e257]:
+        - generic [ref=e258]:
+          - generic [ref=e259]:
+            - paragraph [ref=e260]: WEB-R1
+            - heading "UI research" [level=1] [ref=e261]
+            - paragraph [ref=e262]: research · active · managed
+          - generic [ref=e263]:
+            - generic [ref=e264]: revision 2
+            - link "All knowledge" [ref=e265] [cursor=pointer]:
+              - /url: "#/p/WEB/knowledge"
+        - generic [ref=e266]:
+          - generic [ref=e268]:
+            - heading "Managed research editor" [level=2] [ref=e269]
+            - paragraph [ref=e270]: All fields save together, explicitly. There is no autosave, preview execution, or background write.
+            - generic [ref=e271]:
+              - generic [ref=e272]:
+                - generic [ref=e273]: Title
+                - textbox "Title" [ref=e274]: UI research
+              - generic [ref=e275]:
+                - generic [ref=e276]: Status
+                - combobox "Status" [ref=e277]:
+                  - option "Draft"
+                  - option "Active" [selected]
+              - generic [ref=e278]:
+                - generic [ref=e279]: Tags
+                - textbox "Tags Comma-separated; normalized by Tasker." [ref=e280]:
+                  - /placeholder: research, api
+                  - text: research, ui
+                - generic [ref=e281]: Comma-separated; normalized by Tasker.
+              - generic [ref=e282]:
+                - checkbox "Include active research in the project brief" [checked] [ref=e283]
+                - generic [ref=e284]: Include active research in the project brief
+              - generic [ref=e285]:
+                - generic [ref=e286]: Markdown body
+                - textbox "Markdown body Displayed and edited as plain text. Maximum 1 MiB." [ref=e287]: "# UI research Updated through the local Web UI."
+                - generic [ref=e288]: Displayed and edited as plain text. Maximum 1 MiB.
+            - button "Save research" [ref=e290] [cursor=pointer]
+          - complementary "Resource metadata" [ref=e291]:
+            - generic [ref=e292]:
+              - term [ref=e293]: Kind
+              - definition [ref=e294]: research
+              - term [ref=e295]: Status
+              - definition [ref=e296]:
+                - generic [ref=e297]: active
+              - term [ref=e298]: Source
+              - definition [ref=e299]: managed
+              - term [ref=e300]: Path
+              - definition [ref=e301]: Managed by Tasker
+              - term [ref=e302]: Brief
+              - definition [ref=e303]: Included
+              - term [ref=e304]: Tags
+              - definition [ref=e305]:
+                - list "Tags" [ref=e306]:
+                  - listitem [ref=e307]: research
+                  - listitem [ref=e308]: ui
+              - term [ref=e309]: Revision
+              - definition [ref=e310]:
+                - generic [ref=e311]: revision 2
+              - term [ref=e312]: Created
+              - definition [ref=e313]:
+                - time [ref=e314]: 10 Aug 2026, 13:02
+              - term [ref=e315]: Created by
+              - definition [ref=e316]: web-tester
+              - term [ref=e317]: Updated
+              - definition [ref=e318]:
+                - time [ref=e319]: 10 Aug 2026, 13:03
+              - term [ref=e320]: Updated by
+              - definition [ref=e321]: web-tester
+        - generic [ref=e322]:
+          - heading "Used by tasks" [level=2] [ref=e323]
+          - paragraph [ref=e324]: 0 reverse references
+        - generic [ref=e326]:
+          - heading "No task references" [level=2] [ref=e327]
+          - paragraph [ref=e328]: No task currently links this resource through a context reference.
+  - generic:
+    - status: Managed research saved.

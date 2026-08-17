@@ -1,0 +1,123 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - link "Tasker projects" [ref=e5] [cursor=pointer]:
+        - /url: "#/projects"
+        - generic [ref=e6]: T
+        - generic [ref=e7]:
+          - strong [ref=e8]: Tasker
+          - generic [ref=e9]: Local workspace
+      - generic [ref=e10]:
+        - generic [ref=e11]:
+          - generic [ref=e12]: Project
+          - combobox "Switch project" [ref=e13]:
+            - option "Projects"
+            - option "WEB · Web Demo" [selected]
+        - generic [ref=e14]:
+          - generic [ref=e15]: Acting as
+          - combobox "Acting as" [ref=e16]:
+            - option "web-tester (web-tester)" [selected]
+            - option "Web Tester (web-tester-2)"
+        - generic [ref=e17]: The selected identity is recorded as attribution. It is not authentication.
+        - button "Refresh" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ↻
+    - complementary [ref=e21]:
+      - navigation "Primary navigation" [ref=e22]:
+        - link "Projects" [ref=e23] [cursor=pointer]:
+          - /url: "#/projects"
+          - generic [ref=e24]: ⌂
+        - generic [ref=e48]:
+          - paragraph [ref=e49]: Web Demo
+          - link "Overview" [ref=e50] [cursor=pointer]:
+            - /url: "#/p/WEB/overview"
+            - generic [ref=e51]: ◫
+          - link "Board" [ref=e53] [cursor=pointer]:
+            - /url: "#/p/WEB/board"
+            - generic [ref=e54]: ▥
+          - link "Tasks" [ref=e56] [cursor=pointer]:
+            - /url: "#/p/WEB/tasks"
+            - generic [ref=e57]: ☷
+          - link "Dependencies" [ref=e59] [cursor=pointer]:
+            - /url: "#/p/WEB/dependencies"
+            - generic [ref=e60]: ⌁
+          - link "Knowledge" [ref=e62] [cursor=pointer]:
+            - /url: "#/p/WEB/knowledge"
+            - generic [ref=e63]: ◇
+          - link "History" [ref=e65] [cursor=pointer]:
+            - /url: "#/p/WEB/history"
+            - generic [ref=e66]: ◷
+          - link "Workflow" [ref=e68] [cursor=pointer]:
+            - /url: "#/p/WEB/workflow"
+            - generic [ref=e69]: ⇢
+      - generic [ref=e26]: Local filesystem is authoritative
+    - main [ref=e29]:
+      - generic [ref=e329]:
+        - generic [ref=e331]:
+          - paragraph [ref=e332]: WEB
+          - heading "Tasks" [active] [level=1] [ref=e333]
+          - paragraph [ref=e334]: Search and filter the current project snapshot. Results refresh from the authoritative filesystem.
+        - search [ref=e335]:
+          - generic [ref=e336]:
+            - generic [ref=e338]:
+              - generic [ref=e339]: Search tasks
+              - searchbox "Search tasks" [ref=e340]
+            - generic [ref=e341]:
+              - generic [ref=e342]: State
+              - combobox "State" [ref=e343]:
+                - option "All states" [selected]
+                - option "Backlog"
+                - option "Blocked"
+                - option "Cancelled"
+                - option "Done"
+                - option "In Progress"
+                - option "Ready"
+            - generic [ref=e344]:
+              - generic [ref=e345]: Assignee
+              - combobox "Assignee" [ref=e346]:
+                - option "Any assignee" [selected]
+                - option "Unassigned"
+                - option "web-tester (web-tester)"
+                - option "Web Tester (web-tester-2)"
+            - generic [ref=e347]:
+              - generic [ref=e348]: Tag
+              - textbox "Tag" [ref=e349]:
+                - /placeholder: Exact tag
+            - generic [ref=e350]:
+              - generic [ref=e351]: Readiness
+              - combobox "Readiness" [ref=e352]:
+                - option "Any readiness" [selected]
+                - option "Claimable"
+                - option "Not claimable"
+            - generic [ref=e353]:
+              - generic [ref=e354]: Dependencies
+              - combobox "Dependencies" [ref=e355]:
+                - option "Any dependency state" [selected]
+                - option "Dependency blocked"
+                - option "Not dependency blocked"
+            - button "Apply filters" [ref=e356] [cursor=pointer]
+        - generic [ref=e357]:
+          - generic [ref=e358]: Showing 1–1 of 1 tasks
+          - navigation "Task results pages"
+        - table [ref=e360]:
+          - caption [ref=e361]: Filtered project tasks
+          - rowgroup [ref=e362]:
+            - row [ref=e363]:
+              - columnheader "Task" [ref=e364]
+              - columnheader "State" [ref=e365]
+              - columnheader "Assignee" [ref=e366]
+              - columnheader "Tags" [ref=e367]
+              - columnheader "Readiness" [ref=e368]
+          - rowgroup [ref=e369]:
+            - row [ref=e370]:
+              - cell "Render project overview WEB-1" [ref=e371]:
+                - link "Render project overview" [ref=e372] [cursor=pointer]:
+                  - /url: "#/p/WEB/tasks/WEB-1"
+                - generic [ref=e373]: WEB-1
+              - cell "Backlog" [ref=e374]
+              - cell "Unassigned" [ref=e376]
+              - cell [ref=e377]:
+                - list "Tags" [ref=e378]:
+                  - listitem [ref=e379]: frontend
+              - cell "Claimable" [ref=e380]

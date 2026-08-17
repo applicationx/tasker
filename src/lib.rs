@@ -3,8 +3,10 @@ mod cli;
 mod error;
 mod knowledge;
 mod model;
+mod service;
 mod storage;
 mod transaction;
+mod ui;
 
 pub use app::execute;
 pub use cli::{Cli, OutputFormat};
@@ -48,6 +50,9 @@ pub fn render_command_success(cli: &Cli, value: &Value) -> String {
             .to_string();
     }
     let text = match (&cli.command, format) {
+        (cli::Command::Ui { .. }, OutputFormat::Human | OutputFormat::Markdown) => {
+            ui::human_lifecycle(value).unwrap_or_else(|| human_value(value))
+        }
         (cli::Command::Brief(_), OutputFormat::Human | OutputFormat::Markdown) => {
             render_brief_markdown(value)
         }
@@ -85,7 +90,7 @@ pub fn render_error(error: &AppError, format: OutputFormat, pretty: bool) -> Str
     }
 }
 
-fn render_brief_markdown(value: &Value) -> String {
+pub(crate) fn render_brief_markdown(value: &Value) -> String {
     let project = &value["project"];
     let mut output = format!(
         "# Project brief: {} ({})\n\n",

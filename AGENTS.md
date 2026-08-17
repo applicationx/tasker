@@ -4,7 +4,7 @@ Guidance for coding agents changing Tasker itself.
 
 ## Product invariants
 
-- Tasker is a synchronous, local-first filesystem primitive. Do not add a daemon, service, database, async runtime, networking, telemetry, authentication, or authorization.
+- Tasker is a synchronous, local-first filesystem primitive. Normal CLI commands remain one-shot, offline, and require no prerequisite process. The sole exception is the explicitly invoked `tasker ui` feature, which may run one transient child process per projects root, bind only to numeric loopback on an OS-assigned port, and serve embedded UI/API assets. It must never auto-start, register as an OS service, bind non-loopback, make outbound network requests, maintain authoritative persistent state or indexes, or become required by CLI workflows. No other daemon, service, database, async runtime, networking, telemetry, authentication, or authorization may be added.
 - The filesystem is authoritative. Manual edits and Git checkouts must be immediately visible; do not add hidden required state or a persistent search index.
 - Keep one JSON file per task/user and one immutable JSON file per changelog event. Preserve the documented schema, pretty formatting, trailing newline, deterministic ordering, and focused Git diffs.
 - All project mutations must take the stable project-level `.tasker.lock`, reload relevant data after locking, validate, and use atomic replacement for mutable files. Never replace the lock file itself.

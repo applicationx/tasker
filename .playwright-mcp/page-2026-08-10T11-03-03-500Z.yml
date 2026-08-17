@@ -1,0 +1,80 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - link "Tasker projects" [ref=e5] [cursor=pointer]:
+        - /url: "#/projects"
+        - generic [ref=e6]: T
+        - generic [ref=e7]:
+          - strong [ref=e8]: Tasker
+          - generic [ref=e9]: Local workspace
+      - generic [ref=e10]:
+        - generic [ref=e11]:
+          - generic [ref=e12]: Project
+          - combobox "Switch project" [ref=e13]:
+            - option "Projects"
+            - option "WEB · Web Demo" [selected]
+        - generic [ref=e14]:
+          - generic [ref=e15]: Acting as
+          - combobox "Acting as" [ref=e16]:
+            - option "web-tester (web-tester)" [selected]
+            - option "Web Tester (web-tester-2)"
+        - generic [ref=e17]: The selected identity is recorded as attribution. It is not authentication.
+        - button "Refresh" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ↻
+    - complementary [ref=e21]:
+      - navigation "Primary navigation" [ref=e22]:
+        - link "Projects" [ref=e23] [cursor=pointer]:
+          - /url: "#/projects"
+          - generic [ref=e24]: ⌂
+        - generic [ref=e48]:
+          - paragraph [ref=e49]: Web Demo
+          - link "Overview" [ref=e50] [cursor=pointer]:
+            - /url: "#/p/WEB/overview"
+            - generic [ref=e51]: ◫
+          - link "Board" [ref=e53] [cursor=pointer]:
+            - /url: "#/p/WEB/board"
+            - generic [ref=e54]: ▥
+          - link "Tasks" [ref=e56] [cursor=pointer]:
+            - /url: "#/p/WEB/tasks"
+            - generic [ref=e57]: ☷
+          - link "Dependencies" [ref=e59] [cursor=pointer]:
+            - /url: "#/p/WEB/dependencies"
+            - generic [ref=e60]: ⌁
+          - link "Knowledge" [ref=e62] [cursor=pointer]:
+            - /url: "#/p/WEB/knowledge"
+            - generic [ref=e63]: ◇
+          - link "History" [ref=e65] [cursor=pointer]:
+            - /url: "#/p/WEB/history"
+            - generic [ref=e66]: ◷
+          - link "Workflow" [ref=e68] [cursor=pointer]:
+            - /url: "#/p/WEB/workflow"
+            - generic [ref=e69]: ⇢
+      - generic [ref=e26]: Local filesystem is authoritative
+    - main [ref=e29]:
+      - generic [ref=e163]:
+        - generic [ref=e164]:
+          - generic [ref=e165]:
+            - paragraph [ref=e166]: WEB
+            - heading "Project knowledge" [active] [level=1] [ref=e167]
+            - paragraph [ref=e168]: Resources preserve research and source material; decisions preserve authority and rationale. Links show how tasks use each record.
+          - link "Project brief" [ref=e170] [cursor=pointer]:
+            - /url: "#/p/WEB/knowledge/project-brief"
+        - generic [ref=e171]:
+          - heading "Resources" [level=2] [ref=e172]
+          - paragraph [ref=e173]: 1 total
+        - link "WEB-R1 UI research active research managed" [ref=e175] [cursor=pointer]:
+          - /url: "#/p/WEB/knowledge/resources/WEB-R1"
+          - text: WEB-R1
+          - heading "UI research" [level=3] [ref=e176]
+          - generic [ref=e177]: active
+          - generic [ref=e178]:
+            - generic [ref=e179]: research
+            - generic [ref=e180]: managed
+        - generic [ref=e181]:
+          - heading "Decisions" [level=2] [ref=e182]
+          - paragraph [ref=e183]: 0 total
+        - generic [ref=e185]:
+          - heading "No decisions" [level=2] [ref=e186]
+          - paragraph [ref=e187]: Proposed and settled decisions created with the Tasker CLI will appear here.

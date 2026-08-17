@@ -7,12 +7,14 @@ pub const LONG_ABOUT: &str = r#"Tasker is a local-first, daemonless task manager
 
 Each project is a self-contained filesystem directory containing tasker.yaml,
 PROJECT.md, tasks, resources, decisions, project-local users, and immutable
-changelog events. No server, login, database, network, or background process is required.
+changelog events. Normal CLI use requires no server, login, database, network,
+or background process. The optional `tasker ui` starts an explicit loopback-only child.
 
 AGENT QUICKSTART
 
-  # Discover projects
+  # Discover projects or explicitly launch the optional local Web UI
   tasker list projects -o json
+  tasker ui start --open
 
   # Find and atomically claim available work
   tasker next -p PEV -o json
@@ -136,6 +138,46 @@ pub struct Cli {
     pub command: Command,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum UiCommand {
+    /// Start the root-scoped local Web UI, idempotently
+    #[command(
+        long_about = "Start one optional transient Web UI child for the effective TASKER_ROOT. The child binds only 127.0.0.1 on an OS-assigned port, serves embedded offline assets, and never becomes required by normal CLI commands. Repeating start returns the verified existing instance; a nonce-authenticated child from an older Tasker version is stopped through its endpoint and replaced without PID killing.\n\nExamples:\n  tasker ui start\n  tasker ui start --open -o json"
+    )]
+    Start {
+        /// Open the verified URL in the default browser after startup
+        #[arg(long)]
+        open: bool,
+    },
+    /// Stop the verified UI instance without blindly killing a PID
+    #[command(
+        long_about = "Stop the UI instance for the effective TASKER_ROOT through its nonce-protected loopback shutdown endpoint, including a verified child from an older Tasker version. PID/state alone are never trusted, and there is intentionally no force-kill option.\n\nExample:\n  tasker ui stop"
+    )]
+    Stop,
+    /// Stop and start the root-scoped UI under one lifecycle lock
+    #[command(
+        long_about = "Restart the UI for the effective TASKER_ROOT while serializing the full stop/start sequence. If no instance is running, this starts one normally.\n\nExamples:\n  tasker ui restart\n  tasker ui restart --open"
+    )]
+    Restart {
+        /// Open the verified URL in the default browser after restart
+        #[arg(long)]
+        open: bool,
+    },
+    /// Verify UI liveness with both the instance lock and nonce health handshake
+    #[command(
+        long_about = "Report whether the effective TASKER_ROOT UI is actually running. Status requires both a held instance lock and a matching nonce-authenticated loopback health response; stale transient state is cleaned only when the lock is free. A verified older server version remains manageable and is reported with a warning.\n\nExample:\n  tasker ui status -o json"
+    )]
+    Status,
+    /// Internal detached UI child entry point
+    #[command(hide = true)]
+    Serve {
+        #[arg(long, hide = true)]
+        projects_root: std::path::PathBuf,
+        #[arg(long, hide = true)]
+        launch_id: String,
+    },
+}
+
 impl Cli {
     pub fn effective_output(&self) -> OutputFormat {
         self.output
@@ -173,6 +215,14 @@ impl FromStr for OutputFormat {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Run the optional, transient loopback-only local Web UI
+    #[command(
+        long_about = "Run the optional local Web UI. One transient detached child is scoped to the canonical projects root, binds only 127.0.0.1 on a random OS-assigned port, serves embedded offline assets, and rescans authoritative project files on every request. Normal Tasker commands remain one-shot and do not require it.\n\nExamples:\n  tasker ui start --open\n  tasker ui status -o json\n  tasker ui restart\n  tasker ui stop"
+    )]
+    Ui {
+        #[command(subcommand)]
+        command: UiCommand,
+    },
     /// Read or update global configuration
     #[command(
         long_about = "Read or update global configuration.\n\nThe project root resolves from TASKER_ROOT, then global config, then ~/tasker.\nThe default output resolves from --output, TASKER_OUTPUT, global config, then human.\n\nExamples:\n  tasker config show\n  tasker config get projects-root\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#191816">
+  <title>Tasker</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div class="app-shell" data-shell>
+    <header class="topbar">
+      <button class="icon-button nav-toggle" type="button" data-nav-toggle aria-controls="primary-nav" aria-expanded="false">
+        <span aria-hidden="true">☰</span><span class="sr-only">Open navigation</span>
+      </button>
+      <a class="brand" href="#/projects" aria-label="Tasker projects">
+        <span class="brand-mark" aria-hidden="true">T</span>
+        <span><strong>Tasker</strong><small>Local workspace</small></span>
+      </a>
+      <div class="topbar-context">
+        <label class="compact-field project-field" for="project-switcher">
+          <span>Project</span>
+          <select id="project-switcher" data-project-switcher aria-label="Switch project">
+            <option value="">Projects</option>
+          </select>
+        </label>
+        <label class="compact-field actor-field" for="actor-switcher">
+          <span>Acting as</span>
+          <select id="actor-switcher" data-actor-switcher aria-describedby="actor-help" disabled>
+            <option value="">No project user</option>
+          </select>
+        </label>
+        <span id="actor-help" class="sr-only">The selected identity is recorded as attribution. It is not authentication.</span>
+        <button class="icon-button refresh-button" type="button" data-refresh title="Refresh from disk">
+          <span aria-hidden="true">↻</span><span class="button-label">Refresh</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="nav-scrim" data-nav-scrim hidden></div>
+    <aside class="sidebar" data-sidebar>
+      <nav id="primary-nav" aria-label="Primary navigation">
+        <a class="nav-link projects-link" href="#/projects" data-nav="projects">
+          <span aria-hidden="true">⌂</span><span>Projects</span>
+        </a>
+        <div class="nav-project" data-project-nav hidden>
+          <p class="nav-heading" data-nav-project-name>Project</p>
+          <a class="nav-link" href="#/projects" data-project-route="overview"><span aria-hidden="true">◫</span><span>Overview</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="board"><span aria-hidden="true">▥</span><span>Board</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="tasks"><span aria-hidden="true">☷</span><span>Tasks</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="dependencies"><span aria-hidden="true">⌁</span><span>Dependencies</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="knowledge"><span aria-hidden="true">◇</span><span>Knowledge</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="history"><span aria-hidden="true">◷</span><span>History</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="workflow"><span aria-hidden="true">⇢</span><span>Workflow</span></a>
+        </div>
+      </nav>
+      <div class="sidebar-note">
+        <span class="local-dot" aria-hidden="true"></span>
+        <span>Local filesystem is authoritative</span>
+      </div>
+    </aside>
+
+    <main id="main-content" class="main-content" tabindex="-1">
+      <div class="stale-notice" data-stale-notice role="status" hidden>
+        Files changed on disk. Your unsaved draft is preserved.
+        <button type="button" class="text-button" data-stale-refresh>Review and reload</button>
+      </div>
+      <div class="route-view" data-route-view aria-live="off"></div>
+    </main>
+  </div>
+
+  <div class="toast-region" data-toast-region aria-live="polite" aria-atomic="true"></div>
+  <div class="sr-only" data-live-region aria-live="polite" aria-atomic="true"></div>
+  <noscript><div class="noscript">Tasker UI requires JavaScript. All assets are local and no external scripts are loaded.</div></noscript>
+</body>
+</html>

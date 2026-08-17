@@ -1350,6 +1350,33 @@ pub fn project_summary(project: &Project) -> Result<Value> {
 
 pub fn brief(cli: &Cli, args: &BriefArgs) -> Result<Value> {
     let project = storage::resolve_project(cli.project.as_deref(), args.task.as_deref())?;
+    assemble_brief(project, args, &|value| {
+        crate::render_command_success(cli, value).len()
+    })
+}
+
+pub(crate) fn brief_for_ui(
+    project: Project,
+    args: &BriefArgs,
+    format: OutputFormat,
+) -> Result<Value> {
+    assemble_brief(project, args, &|value| match format {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            format!("{}\n", crate::render_brief_markdown(value).trim_end()).len()
+        }
+        OutputFormat::Json | OutputFormat::Yaml => format!(
+            "{}\n",
+            crate::render_success(value, format, true).trim_end()
+        )
+        .len(),
+    })
+}
+
+fn assemble_brief(
+    project: Project,
+    args: &BriefArgs,
+    rendered_size: &dyn Fn(&Value) -> usize,
+) -> Result<Value> {
     let _lock = storage::lock_project(&project.path)?;
     let project = storage::reload_project(&project)?;
     crate::transaction::recover(&project)?;
@@ -1482,13 +1509,17 @@ pub fn brief(cli: &Cli, args: &BriefArgs) -> Result<Value> {
         "decisions":{"project":project_decisions,"linked":linked_decisions,"proposed":proposed,"summaries":summaries},"warnings":warnings,
         "truncation":{"truncated":false,"max_bytes":args.max_bytes,"included_bytes":0,"omitted":[]}
     });
-    fit_brief(cli, &mut value, args.max_bytes)?;
+    fit_brief(rendered_size, &mut value, args.max_bytes)?;
     Ok(value)
 }
 
-fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
-    stabilize_size(cli, value);
-    if rendered_size(cli, value) <= max_bytes {
+fn fit_brief(
+    rendered_size: &dyn Fn(&Value) -> usize,
+    value: &mut Value,
+    max_bytes: usize,
+) -> Result<()> {
+    stabilize_size(rendered_size, value);
+    if rendered_size(value) <= max_bytes {
         return Ok(());
     }
     let mut omissions = Vec::new();
@@ -1572,7 +1603,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
         }
     }
     for (pointer, section, id) in paths {
-        if rendered_size(cli, value) <= max_bytes {
+        if rendered_size(value) <= max_bytes {
             break;
         }
         if let Some(field) = value.pointer_mut(&pointer)
@@ -1588,7 +1619,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
     // priority upward. Linked accepted decisions and non-archived resource
     // metadata are retained; a limit unable to hold them is too small.
     omit_metadata_while_needed(
-        cli,
+        rendered_size,
         value,
         max_bytes,
         "/decisions/summaries",
@@ -1597,7 +1628,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
         &mut omissions,
     );
     omit_metadata_while_needed(
-        cli,
+        rendered_size,
         value,
         max_bytes,
         "/decisions/proposed",
@@ -1606,7 +1637,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
         &mut omissions,
     );
     omit_metadata_while_needed(
-        cli,
+        rendered_size,
         value,
         max_bytes,
         "/resources",
@@ -1615,7 +1646,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
         &mut omissions,
     );
     omit_metadata_while_needed(
-        cli,
+        rendered_size,
         value,
         max_bytes,
         "/decisions/linked",
@@ -1624,7 +1655,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
         &mut omissions,
     );
     omit_metadata_while_needed(
-        cli,
+        rendered_size,
         value,
         max_bytes,
         "/decisions/project",
@@ -1638,7 +1669,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
         ("/relations", "relations"),
     ] {
         omit_metadata_while_needed(
-            cli,
+            rendered_size,
             value,
             max_bytes,
             pointer,
@@ -1654,7 +1685,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
         "task",
         value["task"]["id"].as_str().unwrap_or("").to_string(),
     )] {
-        while rendered_size(cli, value) > max_bytes {
+        while rendered_size(value) > max_bytes {
             let Some(text) = value.pointer(pointer).and_then(Value::as_str) else {
                 break;
             };
@@ -1690,7 +1721,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
         .unwrap_or(0);
     for index in 0..criterion_count {
         let pointer = format!("/acceptance_criteria/{index}/text");
-        while rendered_size(cli, value) > max_bytes {
+        while rendered_size(value) > max_bytes {
             let Some(text) = value.pointer(&pointer).and_then(Value::as_str) else {
                 break;
             };
@@ -1734,7 +1765,7 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
             value["project"]["id"].as_str().unwrap_or("").to_string(),
         ),
     ] {
-        while rendered_size(cli, value) > max_bytes {
+        while rendered_size(value) > max_bytes {
             let Some(text) = value.pointer(pointer).and_then(Value::as_str) else {
                 break;
             };
@@ -1759,8 +1790,8 @@ fn fit_brief(cli: &Cli, value: &mut Value, max_bytes: usize) -> Result<()> {
             }
         }
     }
-    stabilize_size(cli, value);
-    if rendered_size(cli, value) > max_bytes {
+    stabilize_size(rendered_size, value);
+    if rendered_size(value) > max_bytes {
         return Err(AppError::new(
             "brief_limit_too_small",
             "The required brief skeleton cannot fit within --max-bytes",
@@ -1777,7 +1808,7 @@ fn set_omissions(value: &mut Value, omissions: &[Value]) {
 }
 
 fn omit_metadata_while_needed<F>(
-    cli: &Cli,
+    rendered_size: &dyn Fn(&Value) -> usize,
     value: &mut Value,
     max_bytes: usize,
     pointer: &str,
@@ -1787,7 +1818,7 @@ fn omit_metadata_while_needed<F>(
 ) where
     F: Fn(&Value) -> bool,
 {
-    while rendered_size(cli, value) > max_bytes {
+    while rendered_size(value) > max_bytes {
         let index = value
             .pointer(pointer)
             .and_then(Value::as_array)
@@ -1815,12 +1846,9 @@ fn omit_metadata_while_needed<F>(
     }
 }
 
-fn rendered_size(cli: &Cli, value: &Value) -> usize {
-    crate::render_command_success(cli, value).len()
-}
-fn stabilize_size(cli: &Cli, value: &mut Value) {
+fn stabilize_size(rendered_size: &dyn Fn(&Value) -> usize, value: &mut Value) {
     for _ in 0..8 {
-        let size = rendered_size(cli, value);
+        let size = rendered_size(value);
         if value["truncation"]["included_bytes"] == json!(size) {
             break;
         }

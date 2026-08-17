@@ -5,7 +5,7 @@
 [![CI](https://github.com/applicationx/tasker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/applicationx/tasker/actions/workflows/ci.yml)
 [![Test coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fapplicationx%2Ftasker%2Fcoverage-badge%2Fcoverage.json)](https://github.com/applicationx/tasker/actions/workflows/ci.yml)
 
-Tasker is a small, local-first task manager for coding agents and humans. It is one synchronous Rust executable: no daemon, server, database, account, network request, or prerequisite process. Every project is a self-contained directory whose readable YAML/JSON files work naturally with Git and manual editing.
+Tasker is a small, local-first task manager for coding agents and humans. Normal CLI commands are synchronous, offline, and require no daemon, server, database, account, network request, or prerequisite process. Every project is a self-contained directory whose readable YAML/JSON files work naturally with Git and manual editing. An optional, explicitly launched local Web UI runs as one transient numeric-loopback child and never becomes required by CLI workflows.
 
 ## Install
 
@@ -68,6 +68,23 @@ A project selector (`-p`, `--project`) accepts a prefix, project folder, exact p
 
 Run `tasker --help` for an agent-oriented command map and `tasker <command> --help` for flags and examples.
 
+## Optional local Web UI
+
+The Web UI is opt-in and scoped to the canonical projects root, so it can provide a project picker without changing project files or adding an index:
+
+```sh
+tasker ui start --open
+tasker ui status -o json
+tasker ui restart
+tasker ui stop
+```
+
+`start` binds only `127.0.0.1` on a random OS-assigned port and always reports the URL. It is idempotent when the same verified root instance is already running. `status` and `stop` verify both the instance lock and a nonce-protected loopback handshake rather than trusting a PID file. A verified child from an older Tasker version remains visible to `status` with a warning and can be stopped or replaced by `start`/`restart` through its authenticated endpoint; Tasker never kills the recorded PID. `--open` is optional; browser-launch failure is reported as a warning while the server remains available.
+
+The child serves only embedded offline assets and an allowlisted same-origin API. It makes no outbound requests, maintains no authoritative cache or index, and rescans filesystem records on every read. HTTP ingress uses fixed workers and a bounded queue, strict request-line/header/body limits, and socket deadlines. Change streams have their own fixed cap, so they cannot consume ordinary API or lifecycle capacity. Assets and API responses use `no-store`, preventing stale UI/API pairs if an OS-assigned port is later reused.
+
+Native recursive filesystem notifications are debounced invalidation hints only; late-created projects and referenced files are covered, and every project hint uses its configured prefix. UI quick edits require an existing Tasker actor and exact `if_revision`; task content/state/assignment/acceptance/context and existing managed, non-archived research are editable. Successful quick edits preserve unrelated dirty forms and show a stale-data notice instead of forcing a refresh. Referenced resources, decisions, workflow, dependencies, relations, history, and `PROJECT.md` remain read-only. Normal Tasker commands neither auto-start nor require the UI.
+
 ## Tutorial: autonomous Pi agent workflow
 
 This tutorial is the operating protocol for a Pi agent arriving with no Tasker context. Tasker is designed around a short loop:
@@ -76,7 +93,7 @@ This tutorial is the operating protocol for a Pi agent arriving with no Tasker c
 discover -> identify -> inspect -> claim -> implement -> report -> verify -> complete
 ```
 
-The filesystem is authoritative. There is no service to start, account to authenticate, or cache to synchronize.
+The filesystem is authoritative. This CLI workflow has no service prerequisite, account to authenticate, or cache to synchronize; the optional `tasker ui` process is independent.
 
 ### 1. Verify Tasker and inspect effective configuration
 

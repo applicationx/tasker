@@ -1,0 +1,127 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - link "Tasker projects" [ref=e5] [cursor=pointer]:
+        - /url: "#/projects"
+        - generic [ref=e6]: T
+        - generic [ref=e7]:
+          - strong [ref=e8]: Tasker
+          - generic [ref=e9]: Local workspace
+      - generic [ref=e10]:
+        - generic [ref=e11]:
+          - generic [ref=e12]: Project
+          - combobox "Switch project" [ref=e13]:
+            - option "Projects"
+            - option "WEB · Web Demo" [selected]
+        - generic [ref=e14]:
+          - generic [ref=e15]: Acting as
+          - combobox "Acting as" [ref=e16]:
+            - option "web-tester (web-tester)" [selected]
+            - option "Web Tester (web-tester-2)"
+        - generic [ref=e17]: The selected identity is recorded as attribution. It is not authentication.
+        - button "Refresh" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ↻
+    - complementary [ref=e21]:
+      - navigation "Primary navigation" [ref=e22]:
+        - link "Projects" [ref=e23] [cursor=pointer]:
+          - /url: "#/projects"
+          - generic [ref=e24]: ⌂
+        - generic [ref=e48]:
+          - paragraph [ref=e49]: Web Demo
+          - link "Overview" [ref=e50] [cursor=pointer]:
+            - /url: "#/p/WEB/overview"
+            - generic [ref=e51]: ◫
+          - link "Board" [ref=e53] [cursor=pointer]:
+            - /url: "#/p/WEB/board"
+            - generic [ref=e54]: ▥
+          - link "Tasks" [ref=e56] [cursor=pointer]:
+            - /url: "#/p/WEB/tasks"
+            - generic [ref=e57]: ☷
+          - link "Dependencies" [ref=e59] [cursor=pointer]:
+            - /url: "#/p/WEB/dependencies"
+            - generic [ref=e60]: ⌁
+          - link "Knowledge" [ref=e62] [cursor=pointer]:
+            - /url: "#/p/WEB/knowledge"
+            - generic [ref=e63]: ◇
+          - link "History" [ref=e65] [cursor=pointer]:
+            - /url: "#/p/WEB/history"
+            - generic [ref=e66]: ◷
+          - link "Workflow" [ref=e68] [cursor=pointer]:
+            - /url: "#/p/WEB/workflow"
+            - generic [ref=e69]: ⇢
+      - generic [ref=e26]: Local filesystem is authoritative
+    - main [ref=e29]:
+      - generic [ref=e382]:
+        - generic [ref=e383]:
+          - generic [ref=e384]:
+            - paragraph [ref=e385]: WEB-1
+            - heading "Render project overview" [active] [level=1] [ref=e386]
+            - paragraph [ref=e387]: Display authoritative Tasker data.
+          - generic [ref=e388]:
+            - generic [ref=e389]: revision 1
+            - link "Open agent brief" [ref=e390] [cursor=pointer]:
+              - /url: "#/p/WEB/tasks/WEB-1/brief"
+        - generic [ref=e391]:
+          - generic [ref=e392]:
+            - tablist "Task detail sections" [ref=e393]:
+              - tab "Document" [selected] [ref=e394] [cursor=pointer]
+              - tab "Working" [ref=e395] [cursor=pointer]
+            - tabpanel "Document" [ref=e396]:
+              - generic [ref=e397]:
+                - heading "Task content" [level=2] [ref=e398]
+                - paragraph [ref=e399]: Edit the task document, then save all three fields together. There is no autosave.
+                - generic [ref=e400]:
+                  - generic [ref=e401]:
+                    - generic [ref=e402]: Header
+                    - textbox "Header" [ref=e403]: Render project overview
+                  - generic [ref=e404]:
+                    - generic [ref=e405]: Description
+                    - textbox "Description Describe what must be done. Keep measurable checkpoints in acceptance criteria." [ref=e406]: Display authoritative Tasker data.
+                    - generic [ref=e407]: Describe what must be done. Keep measurable checkpoints in acceptance criteria.
+                  - generic [ref=e408]:
+                    - generic [ref=e409]: Tags
+                    - textbox "Tags Comma-separated; Tasker normalizes and sorts tags." [ref=e410]:
+                      - /placeholder: frontend, urgent
+                      - text: frontend
+                    - generic [ref=e411]: Comma-separated; Tasker normalizes and sorts tags.
+                - button "Save task content" [ref=e413] [cursor=pointer]
+              - generic [ref=e414]:
+                - generic [ref=e415]:
+                  - heading "Connections" [level=2] [ref=e416]
+                  - paragraph [ref=e417]: Read-only in the Web UI
+                - generic [ref=e418]:
+                  - generic [ref=e419]:
+                    - heading "Dependencies" [level=3] [ref=e420]
+                    - paragraph [ref=e421]: None
+                  - generic [ref=e422]:
+                    - heading "Relations" [level=3] [ref=e423]
+                    - paragraph [ref=e424]: None
+                  - generic [ref=e425]:
+                    - heading "Knowledge" [level=3] [ref=e426]
+                    - paragraph [ref=e427]: None
+          - complementary "Task metadata" [ref=e428]:
+            - generic [ref=e429]:
+              - term [ref=e430]: State
+              - definition [ref=e431]:
+                - generic [ref=e432]: Backlog
+              - term [ref=e433]: Assignee
+              - definition [ref=e434]: Unassigned
+              - term [ref=e435]: Revision
+              - definition [ref=e436]:
+                - generic [ref=e437]: revision 1
+              - term [ref=e438]: Created
+              - definition [ref=e439]:
+                - time [ref=e440]: 10 Aug 2026, 13:02
+              - term [ref=e441]: Created by
+              - definition [ref=e442]: web-tester
+              - term [ref=e443]: Updated
+              - definition [ref=e444]:
+                - time [ref=e445]: 10 Aug 2026, 13:02
+              - term [ref=e446]: Updated by
+              - definition [ref=e447]: web-tester
+              - term [ref=e448]: Tags
+              - definition [ref=e449]:
+                - list "Tags" [ref=e450]:
+                  - listitem [ref=e451]: frontend

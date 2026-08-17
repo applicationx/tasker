@@ -530,6 +530,11 @@ fn acceptance_criteria_and_context_are_first_class_task_data() {
 #[test]
 fn every_command_level_has_agent_discoverable_help() {
     let commands = [
+        "ui",
+        "ui start",
+        "ui stop",
+        "ui restart",
+        "ui status",
         "config",
         "config show",
         "config get",
@@ -628,6 +633,8 @@ fn every_command_level_has_agent_discoverable_help() {
     }
 
     let checks = [
+        ("ui", "127.0.0.1"),
+        ("ui status", "nonce-authenticated"),
         ("config", "TASKER_ROOT"),
         ("create project", "^[A-Z][A-Z0-9]{1,9}$"),
         ("create task", "acceptance_criteria"),

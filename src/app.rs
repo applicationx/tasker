@@ -10,6 +10,7 @@ use std::fs;
 
 pub fn execute(cli: &Cli) -> Result<Value> {
     match &cli.command {
+        Command::Ui { command } => crate::ui::command(cli, command),
         Command::Config { command } => config_command(command),
         Command::Create { command } => create_command(cli, command),
         Command::Project { command } => crate::knowledge::commands::project_command(cli, command),
@@ -802,27 +803,13 @@ where
     F: FnOnce(&Project, &User, &mut Task) -> Result<(&'static str, Value, bool)>,
 {
     let project = project_for(cli, Some(id))?;
-    ensure_task_id(&project, id)?;
-    let (_lock, project) = lock_and_recover(project)?;
-    let mut task = storage::read_task(&project, id)?;
-    check_revision(&task, revision)?;
-    let actor = actor_locked(cli, &project, command_actor)?;
-    let (action, changes, changed) = operation(&project, &actor, &mut task)?;
-    if changed {
-        task.revision += 1;
-        task.updated_at = now();
-        task.updated_by = actor.id.clone();
-        task.normalize();
-        storage::write_task(&project, &task)?;
-        event(
-            &project,
-            &actor,
-            action,
-            Some(&task.id),
-            Some(task.revision),
-            changes,
-        )?;
-    }
+    let task = crate::service::mutation::mutate_task_record(
+        project,
+        id,
+        revision,
+        |project| actor_locked(cli, project, command_actor),
+        operation,
+    )?;
     to_value(task)
 }
 
@@ -926,7 +913,7 @@ fn transition_command(cli: &Cli, args: &TransitionArgs) -> Result<Value> {
     )
 }
 
-fn verify_transition(config: &ProjectConfig, current: &str, target: &str) -> Result<()> {
+pub(crate) fn verify_transition(config: &ProjectConfig, current: &str, target: &str) -> Result<()> {
     if !config.workflow.states.contains_key(target) {
         return Err(AppError::new(
             "unknown_state",
@@ -978,7 +965,11 @@ fn unresolved_dependencies(
         .collect()
 }
 
-fn status_for(task: &Task, tasks: &HashMap<String, Task>, config: &ProjectConfig) -> StatusView {
+pub(crate) fn status_for(
+    task: &Task,
+    tasks: &HashMap<String, Task>,
+    config: &ProjectConfig,
+) -> StatusView {
     let unresolved = unresolved_dependencies(task, tasks, config);
     let allowed = config
         .workflow
@@ -2018,6 +2009,10 @@ fn validate_command(cli: &Cli) -> Result<Value> {
         }
         Err(error) => return Err(error),
     };
+    validate_loaded_project(&project)
+}
+
+pub(crate) fn validate_loaded_project(project: &Project) -> Result<Value> {
     let mut errors = Vec::<Value>::new();
     let mut warnings = Vec::<Value>::new();
     if let Err(error) = validate_project_config(&project.config) {
@@ -2234,7 +2229,7 @@ fn validate_command(cli: &Cli) -> Result<Value> {
             }
         }
     }
-    match storage::read_meta(&project) {
+    match storage::read_meta(project) {
         Ok(meta) => {
             let max_id = tasks
                 .iter()
@@ -2269,7 +2264,7 @@ fn validate_command(cli: &Cli) -> Result<Value> {
             )),
         }
     }
-    validate_knowledge(&project, &tasks, &mut errors, &mut warnings)?;
+    validate_knowledge(project, &tasks, &mut errors, &mut warnings)?;
     let problem_key = |value: &Value| {
         (
             value["code"].as_str().unwrap_or("").to_string(),

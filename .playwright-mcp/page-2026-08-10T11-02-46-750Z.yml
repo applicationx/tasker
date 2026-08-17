@@ -1,0 +1,153 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - link "Tasker projects" [ref=e5] [cursor=pointer]:
+        - /url: "#/projects"
+        - generic [ref=e6]: T
+        - generic [ref=e7]:
+          - strong [ref=e8]: Tasker
+          - generic [ref=e9]: Local workspace
+      - generic [ref=e10]:
+        - generic [ref=e11]:
+          - generic [ref=e12]: Project
+          - combobox "Switch project" [ref=e13]:
+            - option "Projects"
+            - option "WEB · Web Demo" [selected]
+        - generic [ref=e14]:
+          - generic [ref=e15]: Acting as
+          - combobox "Acting as" [ref=e16]:
+            - option "web-tester (web-tester)" [selected]
+            - option "Web Tester (web-tester-2)"
+        - generic [ref=e17]: The selected identity is recorded as attribution. It is not authentication.
+        - button "Refresh" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ↻
+    - complementary [ref=e21]:
+      - navigation "Primary navigation" [ref=e22]:
+        - link "Projects" [ref=e23] [cursor=pointer]:
+          - /url: "#/projects"
+          - generic [ref=e24]: ⌂
+        - generic [ref=e48]:
+          - paragraph [ref=e49]: Web Demo
+          - link "Overview" [ref=e50] [cursor=pointer]:
+            - /url: "#/p/WEB/overview"
+            - generic [ref=e51]: ◫
+          - link "Board" [ref=e53] [cursor=pointer]:
+            - /url: "#/p/WEB/board"
+            - generic [ref=e54]: ▥
+          - link "Tasks" [ref=e56] [cursor=pointer]:
+            - /url: "#/p/WEB/tasks"
+            - generic [ref=e57]: ☷
+          - link "Dependencies" [ref=e59] [cursor=pointer]:
+            - /url: "#/p/WEB/dependencies"
+            - generic [ref=e60]: ⌁
+          - link "Knowledge" [ref=e62] [cursor=pointer]:
+            - /url: "#/p/WEB/knowledge"
+            - generic [ref=e63]: ◇
+          - link "History" [ref=e65] [cursor=pointer]:
+            - /url: "#/p/WEB/history"
+            - generic [ref=e66]: ◷
+          - link "Workflow" [ref=e68] [cursor=pointer]:
+            - /url: "#/p/WEB/workflow"
+            - generic [ref=e69]: ⇢
+      - generic [ref=e26]: Local filesystem is authoritative
+    - main [ref=e29]:
+      - generic [ref=e71]:
+        - generic [ref=e73]:
+          - paragraph [ref=e74]: WEB
+          - heading "Web Demo" [active] [level=1] [ref=e75]
+          - paragraph [ref=e76]: A current view of workflow, active ownership, dependencies, and project knowledge.
+        - generic [ref=e77]:
+          - generic [ref=e78]:
+            - generic [ref=e79]: Open work
+            - strong [ref=e80]: "1"
+            - generic [ref=e81]: 1 task total
+          - generic [ref=e82]:
+            - generic [ref=e83]: Terminal
+            - strong [ref=e84]: "0"
+            - generic [ref=e85]: Derived from configured workflow
+          - generic [ref=e86]:
+            - generic [ref=e87]: Claimable
+            - strong [ref=e88]: "1"
+            - generic [ref=e89]: Authoritative Tasker status
+          - generic [ref=e90]:
+            - generic [ref=e91]: Needs attention
+            - strong [ref=e92]: "0"
+            - generic [ref=e93]: Dependency-blocked tasks
+        - generic [ref=e94]:
+          - heading "Workflow distribution" [level=2] [ref=e95]
+          - paragraph [ref=e96]: 6 configured states
+        - generic [ref=e97]:
+          - generic [ref=e98]:
+            - text: Backlog
+            - strong [ref=e99]: "1"
+          - generic [ref=e100]:
+            - text: Blocked
+            - strong [ref=e101]: "0"
+          - generic [ref=e102]:
+            - text: Cancelled
+            - strong [ref=e103]: "0"
+            - text: Terminal
+          - generic [ref=e104]:
+            - text: Done
+            - strong [ref=e105]: "0"
+            - text: Terminal
+          - generic [ref=e106]:
+            - text: In Progress
+            - strong [ref=e107]: "0"
+          - generic [ref=e108]:
+            - text: Ready
+            - strong [ref=e109]: "0"
+        - generic [ref=e110]:
+          - heading "Working now" [level=2] [ref=e111]
+          - paragraph [ref=e112]: 0 assigned non-terminal tasks
+        - generic [ref=e114]:
+          - heading "No assigned work in progress" [level=2] [ref=e115]
+          - paragraph [ref=e116]: Assigned, non-terminal tasks will appear here.
+        - generic [ref=e117]:
+          - heading "Knowledge" [level=2] [ref=e118]
+          - paragraph [ref=e119]: 1 resources · 0 decisions
+        - generic [ref=e120]:
+          - generic [ref=e121]:
+            - generic [ref=e122]: Resources
+            - strong [ref=e123]: "1"
+            - generic [ref=e124]: 1 active
+          - generic [ref=e125]:
+            - generic [ref=e126]: Decisions
+            - strong [ref=e127]: "0"
+            - generic [ref=e128]: 0 accepted
+          - generic [ref=e129]:
+            - generic [ref=e130]: Broken references
+            - strong [ref=e131]: "0"
+            - generic [ref=e132]: task context references
+        - generic [ref=e133]:
+          - heading "Recent history" [level=2] [ref=e134]
+          - paragraph [ref=e135]: 5 events
+        - list [ref=e136]:
+          - listitem [ref=e137]:
+            - time [ref=e138]: 10 Aug 2026, 13:02
+            - generic [ref=e139]:
+              - generic [ref=e140]: task.created
+              - generic [ref=e141]: WEB-1 · web-tester
+            - generic [ref=e142]: r1
+          - listitem [ref=e143]:
+            - time [ref=e144]: 10 Aug 2026, 13:02
+            - generic [ref=e145]:
+              - generic [ref=e146]: resource.created
+              - generic [ref=e147]: web-tester
+          - listitem [ref=e148]:
+            - time [ref=e149]: 10 Aug 2026, 13:02
+            - generic [ref=e150]:
+              - generic [ref=e151]: user.created
+              - generic [ref=e152]: web-tester
+          - listitem [ref=e153]:
+            - time [ref=e154]: 10 Aug 2026, 13:02
+            - generic [ref=e155]:
+              - generic [ref=e156]: project.created
+              - generic [ref=e157]: web-tester
+          - listitem [ref=e158]:
+            - time [ref=e159]: 10 Aug 2026, 13:02
+            - generic [ref=e160]:
+              - generic [ref=e161]: user.created
+              - generic [ref=e162]: web-tester
