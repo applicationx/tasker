@@ -29,6 +29,25 @@ mise run build
 
 Before completing any change, `mise run check` and `mise run build` must pass. Do not suppress Clippy warnings or skip tests to obtain a green run.
 
+When running tests from an agent shell, close stdin (`mise run check < /dev/null`, or `$null | mise run check` in PowerShell). Some commands read stdin when no content is given, and an open pipe makes those tests hang.
+
+## Releasing to AppX Nexus
+
+Tasker is published to the private Nexus cargo registry. `.cargo/config.toml` defines `appx-hosted` (`cargo-hosted`, the publish target) and `appx` (`cargo-group`, used for installs), and `Cargo.toml` restricts `publish` to `appx-hosted`. Never publish to crates.io.
+
+When the user asks to release, publish, or ship a version, do all of the following:
+
+1. Start from a clean working tree containing the intended commits. Ask before including unrelated uncommitted changes.
+2. Pick the next version with semver. Breaking CLI, JSON/YAML, error-code, or persistence changes get a minor bump while the version is 0.x, and a major bump after that. Everything else gets a patch bump. Ask the user if the bump is unclear. A version that already exists in Nexus can never be published again.
+3. Bump `version` in `Cargo.toml`, run `cargo check --locked` so `Cargo.lock` updates, and commit both as `Release tasker vX.Y.Z`.
+4. Run `mise run publish < /dev/null`. It runs `mise run check` and then `cargo publish --locked --registry appx-hosted`.
+5. After a successful publish, tag the commit `vX.Y.Z`. Push the commit and tag only when the user asks.
+6. Verify with `cargo search tasker --registry appx`, or `cargo install tasker --registry appx --locked --force` when the user wants the new binary installed. Then report the published version.
+
+If cargo reports a missing token or 401 for `appx`/`appx-hosted`, the machine is not logged in. Do not write tokens into the repository, `credentials.toml`, or shell history. Instead, give the user the one-time setup from README "Install from AppX Nexus": the `~/.cargo/config.toml` snippet with `cargo:wincred`, and `cargo login` fed from `op read 'op://programming/nexus - appx/...'`. You may run it yourself only if the user explicitly approves it in the current session. Never print the password or token.
+
+`mise run package` builds the exact crate without uploading it. Use it to check packaging changes. When a new top-level file is needed at build time, add it to `include` in `Cargo.toml`.
+
 ## Change discipline
 
 - Prefer concrete synchronous functions and typed Serde models over framework abstractions.
