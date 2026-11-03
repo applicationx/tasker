@@ -28,6 +28,38 @@ cargo install --path . --locked
 
 Tasker uses Rust 2024. `Cargo.lock` is committed because this is an application.
 
+### Install from AppX Nexus
+
+Released versions are published to the private Nexus cargo registry. Nexus requires authentication for both reading and publishing. One-time machine setup, adding the registries to `~/.cargo/config.toml` (on Linux use `cargo:libsecret`, on macOS `cargo:macos-keychain`):
+
+```toml
+[registry]
+global-credential-providers = ["cargo:wincred", "cargo:token"]
+
+[registries.appx]
+index = "sparse+https://nexus.appx-labs.com/repository/cargo-group/"
+
+[registries.appx-hosted]
+index = "sparse+https://nexus.appx-labs.com/repository/cargo-hosted/"
+```
+
+Store the Nexus token once per registry. Nexus expects HTTP Basic credentials, and the token comes from the `nexus - appx` item in the 1Password `programming` vault:
+
+```sh
+TOKEN="Basic $(printf '%s:%s' "$(op read 'op://programming/nexus - appx/username')" "$(op read 'op://programming/nexus - appx/password')" | base64 -w0)"
+printf '%s\n' "$TOKEN" | cargo login --registry appx
+printf '%s\n' "$TOKEN" | cargo login --registry appx-hosted
+unset TOKEN
+```
+
+Then install or upgrade:
+
+```sh
+cargo install tasker --registry appx --locked
+```
+
+To publish a release from a clean checkout, bump `version` in `Cargo.toml` and run `mise run publish`. That runs `mise run check`, then `cargo publish --locked --registry appx-hosted`. `mise run package` builds the exact crate without uploading it.
+
 ## Project root configuration
 
 Tasker discovers project folders directly below `projects_root`. The root is selected in this order:

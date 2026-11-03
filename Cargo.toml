@@ -4,6 +4,18 @@ version = "0.1.0"
 edition = "2024"
 description = "A local-first, daemonless task manager for coding agents and humans"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/applicationx/tasker"
+# Published only to the AppX Nexus cargo-hosted registry (see .cargo/config.toml).
+publish = ["appx-hosted"]
+include = [
+    "/src/**",
+    "/skills/**",
+    "/build.rs",
+    "/docs/assets/tasker-icon.ico",
+    "/README.md",
+    "/Cargo.lock",
+]
 
 [dependencies]
 atomic-write-file = "0.2"

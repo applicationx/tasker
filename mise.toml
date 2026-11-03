@@ -29,3 +29,12 @@ run = "cargo build --release --locked"
 [tasks.install]
 description = "Install tasker locally"
 run = "cargo install --path . --locked --force"
+
+[tasks.package]
+description = "Package the crate exactly as it would be published"
+run = "cargo package --locked"
+
+[tasks.publish]
+description = "Publish to the AppX Nexus cargo-hosted registry (needs cargo login --registry appx-hosted)"
+depends = ["check"]
+run = "cargo publish --locked --registry appx-hosted"
