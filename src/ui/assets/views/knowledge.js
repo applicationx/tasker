@@ -1,42 +1,46 @@
 import {
-  badge, button, el, emptyState, labeledField, pageHeader, revisionBadge, sectionHeading,
-  selectControl, tagList, textBlock, timeElement,
+  badge, button, el, emptyState, labeledField, pageHeader, revisionBadge, sectionHeading, segmented,
+  selectControl, tagList, textBlock, timeElement, tint,
 } from "../dom.js";
 import {
   decisionsFrom, normalizeDecision, normalizeProjectBrief, normalizeResource, resourcesFrom,
   reverseReferences, sourceType,
 } from "../model.js";
-import { decisionHref, projectHref, resourceHref } from "../router.js";
+import { decisionHref, projectHref, resourceHref, taskHref } from "../router.js";
 import {
   dirtyForm, mutationUnavailable, parseTags, recordMetadata, relationshipList, submitMutation,
   tagsInputValue,
 } from "./shared.js";
 
 export function renderKnowledge(ctx) {
+  const tab = ctx.route.query.get("kind") === "decisions" ? "decisions" : "resources";
   const resources = resourcesFrom(ctx.snapshot);
   const decisions = decisionsFrom(ctx.snapshot);
   const root = el("div", {},
-    pageHeader(
-      ctx.prefix,
-      "Project knowledge",
-      "Resources preserve research and source material; decisions preserve authority and rationale. Links show how tasks use each record.",
-      [el("a", { className: "button", href: projectHref(ctx.prefix, "knowledge/project-brief"), text: "Project brief" })],
-    ),
+    pageHeader(null, "Knowledge", "Short records. Value is in what references them.", [
+      el("a", { className: "button ghost", href: projectHref(ctx.prefix, "knowledge/project-brief"), text: "Project brief" }),
+      segmented("Knowledge kind", [
+        { value: "resources", label: `Resources · ${resources.length}` },
+        { value: "decisions", label: `Decisions · ${decisions.length}` },
+      ], tab, (value) => ctx.app.router.navigate(`${projectHref(ctx.prefix, "knowledge").slice(1)}${value === "decisions" ? "?kind=decisions" : ""}`, true)),
+    ]),
   );
 
-  root.append(sectionHeading("Resources", `${resources.length} total`));
-  if (!resources.length) root.append(emptyState("No resources", "Create managed or referenced resources with the Tasker CLI."));
-  else root.append(el("div", { className: "grid grid-3" }, resources.map((resource, index) => knowledgeCard(
-    resourceHref(ctx.prefix, resource.id), resource.id, resource.title, resource.status,
-    [resource.kind, sourceType(resource)], resource.tags, index,
-  ))));
-
-  root.append(sectionHeading("Decisions", `${decisions.length} total`));
-  if (!decisions.length) root.append(emptyState("No decisions", "Proposed and settled decisions created with the Tasker CLI will appear here."));
-  else root.append(el("div", { className: "grid grid-3" }, decisions.map((decision, index) => knowledgeCard(
-    decisionHref(ctx.prefix, decision.id), decision.id, decision.title, decision.status,
-    [decision.scope, decision.superseded_by ? `superseded by ${decision.superseded_by}` : null], decision.tags, index + 2,
-  ))));
+  if (tab === "resources") {
+    if (!resources.length) root.append(emptyState("No resources", "Create managed or referenced resources with the Tasker CLI."));
+    else root.append(el("ul", { className: "knowledge-list" }, resources.map((resource) => knowledgeCard(ctx, {
+      href: resourceHref(ctx.prefix, resource.id), record: resource, color: "var(--cool)",
+      summary: [resource.kind, sourceType(resource), resource.source_path, resource.include_in_project_brief ? "included in project brief" : null],
+    }))));
+  } else if (!decisions.length) {
+    root.append(emptyState("No decisions", "Proposed and settled decisions created with the Tasker CLI will appear here."));
+  } else {
+    root.append(el("ul", { className: "knowledge-list" }, decisions.map((decision) => knowledgeCard(ctx, {
+      href: decisionHref(ctx.prefix, decision.id), record: decision, color: "var(--ok)",
+      projectWide: decision.scope === "project",
+      summary: [decision.decided_by ? `decided by ${decision.decided_by}` : null, decision.superseded_by ? `superseded by ${decision.superseded_by}` : null],
+    }))));
+  }
   return root;
 }
 
@@ -165,12 +169,21 @@ function researchEditor(ctx, resource) {
   return form;
 }
 
-function knowledgeCard(href, idValue, title, status, metadata, tags, tone) {
-  return el("a", { className: "card card-link knowledge-card", href },
-    el("span", { className: "identifier", text: idValue }),
-    el("h3", { text: title || idValue }),
-    badge(status || "unknown", tone),
-    el("div", { className: "knowledge-meta" }, metadata.filter(Boolean).map((item) => el("span", { className: "tag", text: item }))),
-    tagList(tags),
-  );
+function knowledgeCard(ctx, { href, record, color, summary, projectWide = false }) {
+  const references = reverseReferences(ctx.snapshot, record.id);
+  return el("li", {}, tint(el("article", { className: "knowledge-card" },
+    el("div", { className: "knowledge-head" },
+      el("span", { className: "identifier", text: record.id }),
+      el("a", { href, text: record.title || record.id }),
+      badge(record.status || "unknown", ["active", "accepted"].includes(record.status) ? "success" : record.status === "rejected" ? "danger" : 1),
+      projectWide ? el("span", { className: "pill accent", text: "project-wide" }) : null,
+    ),
+    el("p", { className: "knowledge-summary", text: summary.filter(Boolean).join(" · ") || "—" }),
+    tagList(record.tags),
+    el("div", { className: "referenced-by" },
+      el("span", { text: references.length ? "Referenced by" : "Not referenced by any task" }),
+      references.map((reference) => el("a", { className: "ref-chip", href: taskHref(ctx.prefix, reference.task_id) },
+        el("span", { className: "mono", text: reference.task_id }), reference.role)),
+    ),
+  ), color));
 }
