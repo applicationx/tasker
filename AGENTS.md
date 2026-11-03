@@ -42,9 +42,9 @@ When the user asks to release, publish, or ship a version, do all of the followi
 3. Bump `version` in `Cargo.toml`, run `cargo check --locked` so `Cargo.lock` updates, and commit both as `Release tasker vX.Y.Z`.
 4. Run `mise run publish < /dev/null`. It runs `mise run check` and then `cargo publish --locked --registry appx-hosted`.
 5. After a successful publish, tag the commit `vX.Y.Z`. Push the commit and tag only when the user asks.
-6. Verify with `cargo search tasker --registry appx`, or `cargo install tasker --registry appx --locked --force` when the user wants the new binary installed. Then report the published version.
+6. Verify with `cargo info tasker --registry appx` (Nexus has no search API, so `cargo search` returns 404), or `cargo install tasker --registry appx --locked --force` when the user wants the new binary installed. Then report the published version.
 
-If cargo reports a missing token or 401 for `appx`/`appx-hosted`, the machine is not logged in. Do not write tokens into the repository, `credentials.toml`, or shell history. Instead, give the user the one-time setup from README "Install from AppX Nexus": the `~/.cargo/config.toml` snippet with `cargo:wincred`, and `cargo login` fed from `op read 'op://programming/nexus - appx/...'`. You may run it yourself only if the user explicitly approves it in the current session. Never print the password or token.
+If cargo reports "authenticated registries require a credential-provider", "registry index was not found", a missing token, or 401 for `appx`/`appx-hosted`, the machine setup is incomplete. The `appx-nexus-cargo` skill covers the setup for Windows, macOS, Linux, and CI. Do not write tokens into the repository, `credentials.toml`, or shell history. Instead, give the user the one-time setup from README "Install from AppX Nexus": the `~/.cargo/config.toml` snippet with `cargo:wincred`, and `cargo login` fed from `op read 'op://programming/nexus - appx/...'`. You may run it yourself only if the user explicitly approves it in the current session. Never print the password or token.
 
 `mise run package` builds the exact crate without uploading it. Use it to check packaging changes. When a new top-level file is needed at build time, add it to `include` in `Cargo.toml`.
 

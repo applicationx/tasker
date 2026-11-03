@@ -30,7 +30,7 @@ Tasker uses Rust 2024. `Cargo.lock` is committed because this is an application.
 
 ### Install from AppX Nexus
 
-Released versions are published to the private Nexus cargo registry. Nexus requires authentication for both reading and publishing. One-time machine setup, adding the registries to `~/.cargo/config.toml` (on Linux use `cargo:libsecret`, on macOS `cargo:macos-keychain`):
+Released versions are published to the private Nexus cargo registry. Nexus requires authentication for both reading and publishing. One-time machine setup, adding the registries to the user cargo config (`~/.cargo/config.toml`, or `%USERPROFILE%\.cargo\config.toml` on Windows; merge with an existing file). Pick the credential provider for your OS: `cargo:wincred` on Windows, `cargo:macos-keychain` on macOS, `cargo:libsecret` on a Linux desktop. Defining the registries here, not only in this repository, lets `cargo login` and `cargo install` run from any directory:
 
 ```toml
 [registry]
@@ -43,18 +43,29 @@ index = "sparse+https://nexus.appx-labs.com/repository/cargo-group/"
 index = "sparse+https://nexus.appx-labs.com/repository/cargo-hosted/"
 ```
 
-Store the Nexus token once per registry. Nexus expects HTTP Basic credentials, and the token comes from the `nexus - appx` item in the 1Password `programming` vault:
+When writing the file from Windows PowerShell 5.1, use `Set-Content -Encoding Ascii`; that version has no `utf8NoBOM` encoding.
+
+Store the Nexus token once per registry. Nexus expects HTTP Basic credentials, and the token comes from the `nexus - appx` item in the 1Password `programming` vault. macOS and Linux (bash/zsh):
 
 ```sh
-TOKEN="Basic $(printf '%s:%s' "$(op read 'op://programming/nexus - appx/username')" "$(op read 'op://programming/nexus - appx/password')" | base64 -w0)"
+TOKEN="Basic $(printf '%s:%s' "$(op read 'op://programming/nexus - appx/username')" "$(op read 'op://programming/nexus - appx/password')" | base64 | tr -d '\n')"
 printf '%s\n' "$TOKEN" | cargo login --registry appx
 printf '%s\n' "$TOKEN" | cargo login --registry appx-hosted
 unset TOKEN
 ```
 
-Then install or upgrade:
+Windows PowerShell:
+
+```powershell
+$u = op read 'op://programming/nexus - appx/username'; $p = op read 'op://programming/nexus - appx/password'; $t = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${u}:${p}")); $t | cargo login --registry appx; $t | cargo login --registry appx-hosted; Remove-Variable u,p,t
+```
+
+Headless Linux and CI without a keyring: use `cargo:token` and set `CARGO_REGISTRIES_APPX_TOKEN` / `CARGO_REGISTRIES_APPX_HOSTED_TOKEN` to the `Basic ...` value from a secret store instead of running `cargo login`.
+
+Then check, install, or upgrade. Nexus has no search API, so `cargo search` returns 404; use `cargo info` instead:
 
 ```sh
+cargo info tasker --registry appx
 cargo install tasker --registry appx --locked
 ```
 
