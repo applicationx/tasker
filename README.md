@@ -71,6 +71,55 @@ cargo install tasker --registry appx --locked
 
 To publish a release from a clean checkout, bump `version` in `Cargo.toml` and run `mise run publish`. That runs `mise run check`, then `cargo publish --locked --registry appx-hosted`. `mise run package` builds the exact crate without uploading it.
 
+## Set up an agent to run your planning (copy-paste prompt)
+
+Paste this into Claude Code or Codex from inside the repository, or from any folder for a home-board project. Edit the three lines at the top first. The agent installs what is missing, wires up the skill and MCP server, and creates a project where tasks replace Jira issues, and `PROJECT.md`, resources, and decisions replace Confluence pages.
+
+```text
+Set up Tasker as the planning and tracking system for this work, replacing Jira and Confluence.
+
+Project name: <My App>
+Prefix: <APP>            (2-10 uppercase letters/digits)
+Board: <repo | home>     (repo = .tasker committed with this repository; home = ~/tasker, outside any repo)
+
+Steps:
+1. Make sure `tasker --version` works. If not, install it with
+   `cargo install tasker --registry appx --locked` (the appx-nexus-cargo skill covers Nexus login),
+   or `cargo install --git https://github.com/applicationx/tasker --locked`.
+2. Install the version-matched skill for yourself: `tasker skill install --agent claude`
+   (Codex: `--agent codex`). Add `--repo` when the board is repo, so the skill is committed with the code.
+   Then read it with `tasker skill show`.
+3. Register the MCP server unless it is already listed:
+   Claude Code: `claude mcp add tasker -- tasker mcp`
+   Codex: add `[mcp_servers.tasker]` with `command = "tasker"`, `args = ["mcp"]` to ~/.codex/config.toml.
+4. Create the board and project:
+   repo: `tasker init --name "<My App>" --prefix <APP>`
+   home: `tasker --root ~/tasker create project "<My App>" --prefix <APP>`
+   Confirm with `tasker list -o json` and `tasker config show -o json`.
+5. Map Jira concepts onto task types. Keep the defaults (task, story, bug, question, test_case) and add
+   `tasker type add epic -p <APP> --label Epic --description "Large body of work split into stories"`.
+   In the project's tasker.yaml, restrict `subtask_of` with `source_types: [story, task, bug, test_case]`
+   and `target_types: [epic, story]`, then run `tasker validate -p <APP> -o json`.
+   Use `--parent` for hierarchy, `--blocked-by`/`--blocks` for blockers, and `question` tasks that block
+   the work needing the answer.
+6. Replace Confluence: fill PROJECT.md (purpose, goals, non-goals, constraints, architecture, direction,
+   open questions) from what you can learn from this repository and from me, using
+   `tasker project brief set -p <APP> --file <draft.md>`. Register existing docs as referenced resources
+   (`tasker create resource "<title>" -p <APP> --kind design --path docs/<file>.md`) and record
+   architecture choices as decisions (`tasker create decision "<title>" -p <APP> --file <adr.md>`).
+7. Add a short "Planning with Tasker" section to AGENTS.md (and CLAUDE.md if present) that says:
+   work is tracked in Tasker project <APP>; start with `tasker next --as <agent> -p <APP>` or
+   `tasker claim`; read `tasker brief <ID> -o markdown` before coding; record progress and decisions
+   with `tasker context add`; tick `tasker acceptance check`; finish with `tasker transition <ID> done`;
+   create follow-ups instead of leaving TODOs; never use Jira or Confluence for this project.
+8. Ask me for the first epic or the current backlog, then create epics, stories with acceptance
+   criteria, and blockers. Finish by showing `tasker list tasks -p <APP>` and `tasker validate -p <APP>`.
+
+Do not invent requirements; put unknowns in PROJECT.md "Open questions" or as question tasks.
+```
+
+After setup, a short message such as "pick up the next APP task" is enough, because the skill and the `AGENTS.md` section carry the workflow.
+
 ## Project root configuration
 
 Tasker discovers project folders directly below `projects_root`. The root is selected in this order:
