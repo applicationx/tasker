@@ -79,6 +79,8 @@ Relation types (`subtask_of`, `relates_to`, ...) can restrict the task types at 
 
 `tasker mcp` serves the same commands over stdio. Tools: `tasker_list_boards`, `tasker_list_tasks`, `tasker_get_task`, `tasker_status`, `tasker_next`, `tasker_claim`, `tasker_create_task`, `tasker_update_task`, `tasker_transition`, `tasker_acceptance`, `tasker_context_add`, `tasker_dependency`, `tasker_relation`, `tasker_task_types`, `tasker_search`, `tasker_brief`, `tasker_validate`, `tasker_changelog`, `tasker_init`, and `tasker_cli` for anything else. Every tool accepts an optional `root` (and `project`). Use them when the MCP server is configured; otherwise run the CLI.
 
+In Claude Code with the `tasker-panel` plugin installed, call `mcp__tasker-panel__focus` with the task ID once after claiming it, so the person can watch acceptance progress, blockers, and context live beside the chat. Pass `root` only when the board is not discoverable from the working directory. The panel follows later tasker commands by itself.
+
 ## Report
 
 When you finish, report the changed IDs, the validation result, and any blocker with its error code.

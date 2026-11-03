@@ -1,0 +1,9 @@
+{
+  "name": "tasker-panel",
+  "version": "0.1.0",
+  "description": "Live Tasker board beside the chat: workflow columns, the claimed task's acceptance progress, blockers, and latest context.",
+  "author": { "name": "applicationx" },
+  "homepage": "https://github.com/applicationx/tasker",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

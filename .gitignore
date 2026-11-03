@@ -4,3 +4,6 @@
 
 # Windows reserved-name artifact created by local tooling
 NUL
+
+# Claude Code writes editor types beside a loaded mod
+claude-plugins/*/.claude-plugin/types/

@@ -92,6 +92,8 @@ Steps:
 3. Register the MCP server unless it is already listed:
    Claude Code: `claude mcp add tasker -- tasker mcp`
    Codex: add `[mcp_servers.tasker]` with `command = "tasker"`, `args = ["mcp"]` to ~/.codex/config.toml.
+   Claude Code only: also install the live board panel with
+   `claude plugin install tasker-panel --marketplace applicationx/tasker`.
 4. Create the board and project:
    repo: `tasker init --name "<My App>" --prefix <APP>`
    home: `tasker --root ~/tasker create project "<My App>" --prefix <APP>`
@@ -216,6 +218,53 @@ tasker skill install --agent claude --repo   # .claude/skills/tasker/SKILL.md in
 ```
 
 With `--repo` the skill goes under the Git top level (`.claude/skills`, `.agents/skills`, or `.cursor/skills`) so it is committed with the code. An existing different file is kept unless you pass `--force`. Agents can use the CLI with the skill, the MCP server, or both.
+
+## Live board in Claude Code
+
+`claude-plugins/tasker-panel` is a Claude Code mod that keeps a Tasker panel beside the chat while an agent works. It shows:
+
+- the task the agent is on: header, type, state, assignee, an acceptance-criteria progress bar with each criterion ticked or open, `blocked_by` blockers with their states, what it `blocks`, and the latest four context entries;
+- the project board grouped by workflow state, in workflow order with terminal states last. Dependency-blocked tasks are marked ⛔. Click a task to follow it; **follow agent** goes back to automatic focus;
+- a status-line summary such as `DEMO-1 In Progress · AC 1/2 · blocked by 1`, which is also the fallback in a plain terminal session where no pane is docked.
+
+Install it from this repository's marketplace. At a Claude Code terminal prompt:
+
+```text
+/plugin install tasker-panel --marketplace applicationx/tasker
+```
+
+From a shell:
+
+```sh
+claude plugin install tasker-panel --marketplace applicationx/tasker
+```
+
+In the desktop app, click **+** next to the prompt box, then **Plugins** → **Add marketplace** with `applicationx/tasker`, then **Add plugin**. To run it straight from a checkout, start Claude Code with `claude --plugin-dir claude-plugins/tasker-panel`, or list that folder in `CLAUDE_CODE_PLUGIN_DIRS`.
+
+The panel opens by itself in the desktop app and in VS Code when the session's folder resolves a Tasker board. In a terminal session it only updates the status line until you run `/tasker-panel`.
+
+```text
+/tasker-panel                    open the panel
+/tasker-panel APP-12             follow a task (or APP to follow a project)
+/tasker-panel auto               follow the agent again
+/tasker-panel --root ~/tasker    read a board the session's folder does not discover
+/tasker-panel --bin /path/to/tasker   use a tasker other than the one on PATH
+```
+
+Agents can also call the `mcp__tasker-panel__focus` tool, with optional `task`, `project`, `root`, and `bin` fields, to open the panel on the task they just claimed.
+
+How it picks what to show: a pinned task or project comes first. Next comes the latest `tasker claim`, `transition`, `acceptance`, `context`, `brief`, `status`, or `get task` the agent ran, through Bash, PowerShell, or a `mcp__tasker__*` tool. After that it uses the task in the workflow's `claim_state` assigned to `TASKER_ACTOR`, then any task in `claim_state`. The project is the pinned or last-used prefix, then `TASKER_PROJECT`, then the first project in the effective root.
+
+The mod keeps Tasker's invariants. It only runs the one-shot CLI (`tasker list projects`, `get project`, `list tasks`, `get task`, and `status`, all with `-o json`) from the session's working directory. It does this after each tasker tool call and whenever a file in the project's `tasks/` folder changes. It checks for changes by listing that folder every two seconds, so manual edits and Git checkouts show up too. It starts no process that outlives a command, opens no socket, and keeps no index. What it remembers is only the current drawing and the pin, held by Claude Code for the session.
+
+Other ways to see progress, and why the panel is the default:
+
+| Option | Live | Cost | Notes |
+| --- | --- | --- | --- |
+| `tasker-panel` mod (recommended) | Yes: refreshes on tool calls and file changes | None to the conversation | Claude Code 2.1.275 or later. It is a pane in the desktop app and VS Code, and the status line in a terminal. |
+| Inline visualization from the skill (`show_widget`) | No: a snapshot each time the agent draws it | Tokens on every redraw | Fine for an occasional summary in chat. It goes stale as soon as work moves on. |
+| MCP Apps UI resource from `tasker mcp` | Only when a tool returns it | Would need an HTML UI in the binary | Shows inline with one tool result rather than staying beside the chat. Client support varies. |
+| `tasker ui start --open` | Yes | A loopback child process you start yourself | The full board in a browser, outside the chat. |
 
 ## Quickstart
 
