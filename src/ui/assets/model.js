@@ -18,8 +18,56 @@ export function workflowFrom(snapshot) {
   return project.workflow || project.configuration?.workflow || project.configuration || snapshot?.workflow || { states: {}, transitions: {} };
 }
 
+// Configured states in workflow order: breadth-first from the initial state along
+// configured transitions, then any unreachable states in key order.
 export function stateEntries(snapshot) {
-  return Object.entries(workflowFrom(snapshot).states || {});
+  const workflow = workflowFrom(snapshot);
+  const states = workflow.states || {};
+  const ordered = [];
+  const queue = workflow.initial_state in states ? [workflow.initial_state] : [];
+  const seen = new Set(queue);
+  while (queue.length) {
+    const key = queue.shift();
+    ordered.push(key);
+    for (const target of workflow.transitions?.[key] || []) {
+      if (target in states && !seen.has(target)) { seen.add(target); queue.push(target); }
+    }
+  }
+  const nonTerminal = ordered.filter((key) => !states[key].terminal);
+  const terminal = ordered.filter((key) => states[key].terminal);
+  const rest = Object.keys(states).filter((key) => !seen.has(key));
+  return [...nonTerminal, ...rest, ...terminal].map((key) => [key, states[key]]);
+}
+
+const STATE_PALETTE = ["var(--cool)", "var(--bad)", "var(--violet)", "var(--olive)"];
+
+// Colours derive from configured semantics only: initial, claim, terminal and dependency_satisfied.
+export function stateColor(snapshot, state) {
+  const workflow = workflowFrom(snapshot);
+  const config = workflow.states?.[state];
+  if (!config) return "var(--faint)";
+  if (config.terminal) return config.dependency_satisfied ? "var(--ok)" : "var(--dim-state)";
+  if (state === workflow.claim_state) return "var(--accent)";
+  if (state === workflow.initial_state) return "var(--neutral-state)";
+  const others = stateEntries(snapshot)
+    .filter(([key, item]) => !item.terminal && key !== workflow.claim_state && key !== workflow.initial_state)
+    .map(([key]) => key);
+  return STATE_PALETTE[Math.max(0, others.indexOf(state)) % STATE_PALETTE.length];
+}
+
+export function isTerminal(snapshot, state) {
+  return Boolean(stateConfig(snapshot, state).terminal);
+}
+
+export function userFrom(snapshot, userId) {
+  if (!userId) return null;
+  return usersFrom(snapshot).find((user) => user.id === userId) || { id: userId, name: userId, kind: "unknown" };
+}
+
+export function acceptanceLabel(task, separator = "/") {
+  const criteria = Array.isArray(task?.acceptance_criteria) ? task.acceptance_criteria : [];
+  if (!criteria.length) return "—";
+  return `${criteria.filter((item) => item.completed).length}${separator}${criteria.length}`;
 }
 
 export function stateConfig(snapshot, state) {

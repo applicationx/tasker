@@ -1,24 +1,27 @@
 import {
-  badge, button, conflictBanner, copyText, draftText, el, inlineError, removeInlineError,
-  revisionBadge, setPending, tagList, timeElement, toneFor,
+  avatar, conflictBanner, copyText, draftText, el, inlineError, removeInlineError, revisionBadge,
+  setPending, timeElement, tint,
 } from "../dom.js";
-import { assigneeName, stateEntries, stateLabel } from "../model.js";
+import { acceptanceLabel, stateColor, stateLabel, userFrom } from "../model.js";
 import { taskHref } from "../router.js";
 
 export function statusBadge(snapshot, state) {
-  const keys = stateEntries(snapshot).map(([key]) => key);
-  return badge(stateLabel(snapshot, state), toneFor(state, keys));
+  return tint(el("span", { className: "state-label", text: stateLabel(snapshot, state) }), stateColor(snapshot, state));
 }
 
 export function taskCard(ctx, record) {
   const { task, status = {} } = record;
-  return el("a", { className: "card card-link task-card", href: taskHref(ctx.prefix, task.id) },
-    el("span", { className: "identifier", text: task.id }),
-    el("h3", { text: task.header }),
-    tagList(task.tags),
-    el("div", { className: "task-card-footer" },
-      el("span", { text: assigneeName(ctx.snapshot, task.assignee) }),
-      status.dependency_blocked ? badge("Blocked", "blocked") : statusBadge(ctx.snapshot, task.state),
+  const unresolved = status.unresolved_dependencies || [];
+  const user = userFrom(ctx.snapshot, task.assignee);
+  const criteria = task.acceptance_criteria || [];
+  return el("a", { className: "task-card", href: taskHref(ctx.prefix, task.id) },
+    el("span", { className: "task-card-title", text: task.header }),
+    el("span", { className: "task-card-footer" },
+      el("span", { className: "identifier", text: task.id }),
+      status.dependency_blocked ? el("span", { className: "blocked-pill", text: `blocked by ${unresolved.length || "?"}` }) : null,
+      el("span", { className: "spacer" }),
+      criteria.length ? el("span", { className: "task-card-ac", text: acceptanceLabel(task) }) : null,
+      user ? avatar(user, "sm") : null,
     ),
   );
 }
@@ -105,12 +108,10 @@ export function relationshipList(ctx, references) {
   if (!Array.isArray(references) || !references.length) return null;
   return el("ul", { className: "reference-list" }, references.map((reference) => {
     const taskId = reference.task_id || reference.id || reference.source_task_id;
-    return el("li", {},
-      el("div", { className: "list-main" },
-        taskId ? el("a", { href: taskHref(ctx.prefix, taskId), text: taskId }) : el("span", { text: "Task reference" }),
-        el("div", { className: "list-meta" }, reference.role || reference.kind || "linked"),
-      ),
-    );
+    const role = reference.role || reference.kind || "linked";
+    return el("li", {}, taskId
+      ? el("a", { className: "ref-chip", href: taskHref(ctx.prefix, taskId) }, el("span", { className: "mono", text: taskId }), role)
+      : el("span", { className: "ref-chip", text: role }));
   }));
 }
 

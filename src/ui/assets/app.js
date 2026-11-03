@@ -1,7 +1,7 @@
 import { TaskerApi } from "./api.js";
-import { clear, el, errorView, loadingView } from "./dom.js";
-import { projectName, projectsFrom, usersFrom } from "./model.js";
-import { HashRouter, projectHref } from "./router.js";
+import { avatar, clear, el, errorView, loadingView } from "./dom.js";
+import { projectName, projectsFrom, taskRecords, userFrom, usersFrom, workflowFrom } from "./model.js";
+import { HashRouter, projectHref, taskHref } from "./router.js";
 import { renderBoard } from "./views/board.js";
 import { renderBrief } from "./views/brief.js";
 import { renderDependencies } from "./views/dependencies.js";
@@ -50,14 +50,16 @@ class TaskerApp {
     this.projectSwitcher = document.querySelector("[data-project-switcher]");
     this.actorSwitcher = document.querySelector("[data-actor-switcher]");
     this.projectNav = document.querySelector("[data-project-nav]");
-    this.navProjectName = document.querySelector("[data-nav-project-name]");
+    this.brandProject = document.querySelector("[data-brand-project]");
+    this.workingNow = document.querySelector("[data-working-now]");
+    this.workingList = document.querySelector("[data-working-list]");
     this.staleNotice = document.querySelector("[data-stale-notice]");
     this.liveRegion = document.querySelector("[data-live-region]");
     this.toastRegion = document.querySelector("[data-toast-region]");
     this.sidebar = document.querySelector("[data-sidebar]");
     this.navToggle = document.querySelector("[data-nav-toggle]");
     this.navScrim = document.querySelector("[data-nav-scrim]");
-    this.mobileNav = window.matchMedia("(max-width: 1199px)");
+    this.mobileNav = window.matchMedia("(max-width: 959px)");
   }
 
   async init() {
@@ -252,13 +254,34 @@ class TaskerApp {
     this.actorSwitcher.disabled = !users.length;
     this.actorByProject.set(prefix, selected);
     this.projectNav.hidden = false;
-    this.navProjectName.textContent = projectName(snapshot, prefix);
+    this.brandProject.textContent = `${prefix} · ${projectName(snapshot, prefix)}`;
+    const records = taskRecords(snapshot);
+    for (const count of document.querySelectorAll("[data-nav-count]")) count.textContent = String(records.length);
+    this.updateWorkingNow(prefix, snapshot, records);
+  }
+
+  updateWorkingNow(prefix, snapshot, records) {
+    const claimState = workflowFrom(snapshot).claim_state;
+    const active = records.filter(({ task }) => task.state === claimState && task.assignee);
+    clear(this.workingList, active.slice(0, 8).map(({ task }) => {
+      const user = userFrom(snapshot, task.assignee);
+      return el("li", {}, el("a", { className: "working-item", href: taskHref(prefix, task.id) },
+        avatar(user, "sm"),
+        el("span", { className: "working-copy" },
+          el("span", { className: "working-name", text: user.name || user.id }),
+          el("span", { className: "working-task", text: task.id }),
+        ),
+      ));
+    }));
+    this.workingNow.hidden = !active.length;
   }
 
   updateNavigation(route) {
     const prefix = route.prefix;
     if (!prefix) {
       this.projectNav.hidden = true;
+      this.workingNow.hidden = true;
+      this.brandProject.textContent = "Local workspace";
       this.actorSwitcher.disabled = true;
       clear(this.actorSwitcher, el("option", { value: "", text: "No project user" }));
       this.projectSwitcher.value = "";
