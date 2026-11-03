@@ -8,6 +8,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -54,9 +56,8 @@ pub fn lock_project(path: &Path) -> Result<ProjectLock> {
     Ok(ProjectLock { file: f })
 }
 
-pub fn lock_projects_root() -> Result<ProjectLock> {
-    let root = projects_root();
-    fs::create_dir_all(&root)
+pub fn lock_root(root: &Path) -> Result<ProjectLock> {
+    fs::create_dir_all(root)
         .map_err(|e| AppError::io(e, format!("cannot create {}", root.display())))?;
     let path = root.join(".tasker-root.lock");
     let file = OpenOptions::new()
@@ -83,9 +84,19 @@ pub fn expand_path(value: &str) -> PathBuf {
     }
     PathBuf::from(value)
 }
+/// Global configuration directory. `TASKER_CONFIG_DIR` overrides the OS
+/// location so tests and sandboxes never touch real user configuration.
+pub fn config_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("TASKER_CONFIG_DIR")
+        && !dir.is_empty()
+    {
+        return Some(expand_path(&dir));
+    }
+    ProjectDirs::from("dev", "Tasker", "tasker").map(|d| d.config_dir().to_path_buf())
+}
 fn config_path() -> PathBuf {
-    ProjectDirs::from("dev", "Tasker", "tasker")
-        .map(|d| d.config_dir().join("config.toml"))
+    config_dir()
+        .map(|d| d.join("config.toml"))
         .unwrap_or_else(|| PathBuf::from(".tasker-config.toml"))
 }
 pub fn load_global_config() -> GlobalConfig {
@@ -109,24 +120,90 @@ pub fn configured_output() -> Option<OutputFormat> {
         .default_output
         .and_then(|s| s.parse().ok())
 }
-pub fn projects_root() -> PathBuf {
+/// Name of the workspace board folder that is committed alongside code.
+pub const WORKSPACE_DIR: &str = ".tasker";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootSource {
+    Env,
+    Workspace,
+    Config,
+    Default,
+}
+impl RootSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RootSource::Env => "env",
+            RootSource::Workspace => "workspace",
+            RootSource::Config => "config",
+            RootSource::Default => "default",
+        }
+    }
+}
+
+/// Finds the nearest real `.tasker` directory at or above the current
+/// directory. The home directory's `.tasker` is skipped so a stray folder
+/// there cannot capture every repository below it.
+pub fn discover_workspace_root() -> Option<PathBuf> {
+    let start = std::env::current_dir().ok()?;
+    let home = BaseDirs::new().map(|b| b.home_dir().to_path_buf());
+    start
+        .ancestors()
+        .filter(|dir| home.as_deref() != Some(*dir))
+        .map(|dir| dir.join(WORKSPACE_DIR))
+        .find(|candidate| is_real_dir(candidate))
+}
+pub fn is_real_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !is_symlink_or_reparse(&m))
+}
+static ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+static STDIN_RESERVED: AtomicBool = AtomicBool::new(false);
+
+/// Pins the projects root for this process (`tasker mcp --root`); it ranks
+/// with TASKER_ROOT as an explicit environment choice.
+pub fn override_projects_root(root: PathBuf) {
+    let _ = ROOT_OVERRIDE.set(root);
+}
+/// Marks stdin as owned by a protocol (`tasker mcp`) so commands never
+/// consume it as structured input or Markdown bodies.
+pub fn reserve_stdin() {
+    STDIN_RESERVED.store(true, Ordering::SeqCst);
+}
+pub fn stdin_reserved() -> bool {
+    STDIN_RESERVED.load(Ordering::SeqCst)
+}
+pub fn projects_root_with_source() -> (PathBuf, RootSource) {
+    if let Some(root) = ROOT_OVERRIDE.get() {
+        return (root.clone(), RootSource::Env);
+    }
     if let Ok(s) = std::env::var("TASKER_ROOT") {
-        return expand_path(&s);
+        return (expand_path(&s), RootSource::Env);
+    }
+    if let Some(root) = discover_workspace_root() {
+        return (root, RootSource::Workspace);
     }
     if let Some(s) = load_global_config().projects_root {
-        return expand_path(&s);
+        return (expand_path(&s), RootSource::Config);
     }
-    BaseDirs::new()
+    let root = BaseDirs::new()
         .map(|b| b.home_dir().join("tasker"))
-        .unwrap_or_else(|| PathBuf::from("tasker"))
+        .unwrap_or_else(|| PathBuf::from("tasker"));
+    (root, RootSource::Default)
+}
+pub fn projects_root() -> PathBuf {
+    projects_root_with_source().0
 }
 pub fn effective_config_value() -> serde_json::Value {
     let c = load_global_config();
-    serde_json::json!({"projects_root":projects_root().to_string_lossy(),"default_output":std::env::var("TASKER_OUTPUT").ok().or(c.default_output).unwrap_or_else(||"human".into()),"config_file":config_path().to_string_lossy()})
+    let (root, source) = projects_root_with_source();
+    serde_json::json!({"projects_root":root.to_string_lossy(),"root_source":source.as_str(),"default_output":std::env::var("TASKER_OUTPUT").ok().or(c.default_output).unwrap_or_else(||"human".into()),"config_file":config_path().to_string_lossy(),"registry_file":crate::registry::registry_path().to_string_lossy()})
 }
 
 pub fn discover_projects() -> Result<Vec<Project>> {
-    let root = projects_root();
+    discover_projects_in(&projects_root())
+}
+pub fn discover_projects_in(root: &Path) -> Result<Vec<Project>> {
+    let root = root.to_path_buf();
     if !root.exists() {
         return Ok(vec![]);
     }
@@ -427,6 +504,11 @@ pub fn read_input(path: Option<&str>) -> Result<String> {
     if let Some(p) = path {
         return fs::read_to_string(expand_path(p))
             .map_err(|e| AppError::io(e, format!("cannot read input file {p}")));
+    }
+    if stdin_reserved() {
+        return Err(AppError::input(
+            "stdin is reserved for the MCP protocol; pass structured input with --file",
+        ));
     }
     let mut s = String::new();
     std::io::stdin()

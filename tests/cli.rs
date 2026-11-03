@@ -706,3 +706,229 @@ fn help_and_machine_errors_are_agent_discoverable() {
     assert_eq!(result["valid"], false);
     assert_eq!(result["errors"][0]["code"], "malformed_project_config");
 }
+
+/// Runs tasker in `dir` with an isolated configuration directory and no
+/// TASKER_ROOT unless one is given, so workspace discovery and the registry
+/// are exercised without touching real user configuration.
+fn run_workspace(dir: &Path, config: &Path, root: Option<&Path>, args: &[&str]) -> Output {
+    let mut command = Command::new(bin());
+    command
+        .args(args)
+        .current_dir(dir)
+        .env("TASKER_ACTOR", "tester")
+        .env("TASKER_CONFIG_DIR", config)
+        .env_remove("TASKER_ROOT")
+        .env_remove("TASKER_PROJECT");
+    if let Some(root) = root {
+        command.env("TASKER_ROOT", root);
+    }
+    command.output().unwrap()
+}
+
+fn ok_workspace(dir: &Path, config: &Path, root: Option<&Path>, args: &[&str]) -> Value {
+    let output = run_workspace(dir, config, root, args);
+    assert!(
+        output.status.success(),
+        "command {:?} in {} failed: {}",
+        args,
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn same_path(left: &str, right: &Path) -> bool {
+    Path::new(left).canonicalize().unwrap() == right.canonicalize().unwrap()
+}
+
+#[test]
+fn workspace_board_is_discovered_initialized_and_listed() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let repo = temp.path().join("repo");
+    let nested = repo.join("src").join("deep");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("tasker")).unwrap();
+    std::fs::create_dir_all(&nested).unwrap();
+    let board = repo.join(".tasker");
+
+    // A Git repository or an undotted tasker folder never selects a root.
+    let shown = ok_workspace(&nested, &config, None, &["config", "show", "-o", "json"]);
+    assert_ne!(shown["root_source"], "workspace");
+
+    // init creates .tasker at the Git top level, ignores transient files,
+    // registers the board, and creates the first project.
+    let init = ok_workspace(
+        &nested,
+        &config,
+        None,
+        &["init", "--name", "Demo", "--prefix", "DEM", "-o", "json"],
+    );
+    assert_eq!(init["created"], true);
+    assert_eq!(init["gitignore"], true);
+    assert_eq!(init["registered"], true);
+    assert_eq!(init["project"]["prefix"], "DEM");
+    assert!(same_path(init["root"].as_str().unwrap(), &board));
+    let gitignore = std::fs::read_to_string(board.join(".gitignore")).unwrap();
+    assert!(gitignore.contains(".tasker-root.lock"));
+    assert!(gitignore.contains(".tasker-transactions/"));
+    let again = ok_workspace(
+        &repo,
+        &config,
+        None,
+        &["init", "--name", "Demo", "--prefix", "DEM", "-o", "json"],
+    );
+    assert_eq!(again["created"], false);
+    assert_eq!(again["gitignore"], false);
+    assert_eq!(again["registered"], false);
+    assert_eq!(again["project"]["prefix"], "DEM");
+
+    // Every directory inside the repository resolves the same board.
+    for dir in [repo.clone(), nested.clone(), board.join("demo")] {
+        let shown = ok_workspace(&dir, &config, None, &["config", "show", "-o", "json"]);
+        assert_eq!(shown["root_source"], "workspace", "from {}", dir.display());
+        assert!(same_path(shown["projects_root"].as_str().unwrap(), &board));
+    }
+    let task = ok_workspace(
+        &nested,
+        &config,
+        None,
+        &["create", "task", "Local task", "-p", "DEM", "-o", "json"],
+    );
+    assert_eq!(task["id"], "DEM-1");
+    assert!(board.join("demo/tasks/DEM-1.json").is_file());
+
+    // TASKER_ROOT still takes precedence over the workspace board.
+    let other = temp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let shown = ok_workspace(
+        &nested,
+        &config,
+        Some(&other),
+        &["config", "show", "-o", "json"],
+    );
+    assert_eq!(shown["root_source"], "env");
+    assert!(same_path(shown["projects_root"].as_str().unwrap(), &other));
+
+    // Elsewhere, bare `tasker list` shows the current root plus the board.
+    let listed = ok_workspace(&other, &config, Some(&other), &["list", "-o", "json"]);
+    let boards = listed["boards"].as_array().unwrap();
+    assert_eq!(boards.len(), 2);
+    assert_eq!(boards[0]["current"], true);
+    assert_eq!(boards[0]["source"], "env");
+    assert_eq!(boards[1]["source"], "registry");
+    assert_eq!(boards[1]["projects"][0]["prefix"], "DEM");
+    let stats = ok_workspace(
+        &other,
+        &config,
+        Some(&other),
+        &["list", "--stats", "-o", "json"],
+    );
+    assert_eq!(stats["boards"][1]["projects"][0]["stats"]["backlog"], 1);
+
+    // Inside the repository the board is current and not duplicated.
+    let listed = ok_workspace(&nested, &config, None, &["list", "-o", "json"]);
+    let boards = listed["boards"].as_array().unwrap();
+    assert_eq!(boards.len(), 1);
+    assert_eq!(boards[0]["source"], "workspace");
+    assert_eq!(boards[0]["registered"], true);
+}
+
+#[test]
+fn board_registry_round_trips_and_tolerates_missing_roots() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let current = temp.path().join("current");
+    let gone = temp.path().join("gone");
+    std::fs::create_dir_all(&current).unwrap();
+    std::fs::create_dir_all(&gone).unwrap();
+    let gone_text = gone.to_string_lossy().to_string();
+    let root = Some(current.as_path());
+
+    let added = ok_workspace(
+        &current,
+        &config,
+        root,
+        &["root", "add", &gone_text, "-o", "json"],
+    );
+    assert_eq!(added["added"], true);
+    let repeated = ok_workspace(
+        &current,
+        &config,
+        root,
+        &["root", "add", &gone_text, "-o", "json"],
+    );
+    assert_eq!(repeated["added"], false);
+    let missing = run_workspace(
+        &current,
+        &config,
+        root,
+        &["root", "add", "absent", "-o", "json"],
+    );
+    assert_eq!(missing.status.code(), Some(2));
+
+    let registered = added["root"].as_str().unwrap().to_string();
+    std::fs::remove_dir(&gone).unwrap();
+    let roots = ok_workspace(&current, &config, root, &["root", "list", "-o", "json"]);
+    assert_eq!(roots[0]["root"], registered.as_str());
+    assert_eq!(roots[0]["exists"], false);
+
+    let listed = ok_workspace(&current, &config, root, &["list", "-o", "json"]);
+    assert_eq!(listed["boards"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["warnings"][0]["code"], "registered_root_missing");
+
+    let removed = ok_workspace(
+        &current,
+        &config,
+        root,
+        &["root", "remove", &registered, "-o", "json"],
+    );
+    assert_eq!(removed["removed"], true);
+    let roots = ok_workspace(&current, &config, root, &["root", "list", "-o", "json"]);
+    assert!(roots.as_array().unwrap().is_empty());
+}
+
+#[test]
+fn competing_registry_writers_keep_every_root() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let dirs: Vec<_> = (0..8)
+        .map(|n| {
+            let dir = temp.path().join(format!("board-{n}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        })
+        .collect();
+    let children: Vec<_> = dirs
+        .iter()
+        .map(|dir| {
+            Command::new(bin())
+                .args(["root", "add", &dir.to_string_lossy(), "-o", "json"])
+                .env("TASKER_CONFIG_DIR", &config)
+                .env("TASKER_ROOT", temp.path())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+    let root = Some(temp.path());
+    let roots = ok_workspace(temp.path(), &config, root, &["root", "list", "-o", "json"]);
+    assert_eq!(roots.as_array().unwrap().len(), dirs.len());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_workspace_folder_is_ignored() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let real = temp.path().join("real");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(&repo).unwrap();
+    std::os::unix::fs::symlink(&real, repo.join(".tasker")).unwrap();
+    let shown = ok_workspace(&repo, &config, None, &["config", "show", "-o", "json"]);
+    assert_ne!(shown["root_source"], "workspace");
+}

@@ -33,8 +33,37 @@ Tasker uses Rust 2024. `Cargo.lock` is committed because this is an application.
 Tasker discovers project folders directly below `projects_root`. The root is selected in this order:
 
 1. `TASKER_ROOT`
-2. the global configuration file in the OS-specific application config directory
-3. `~/tasker`
+2. the nearest `.tasker` folder at or above the current directory (a real directory, not a symlink; the home directory's own `.tasker` is ignored)
+3. the global configuration file in the OS-specific application config directory
+4. `~/tasker`
+
+`tasker config show` reports which one applied as `root_source` (`env`, `workspace`, `config`, or `default`).
+
+### Boards committed with the code
+
+A `.tasker` folder lets each repository keep its task board next to its source, so task state travels across machines and through commits, branches, and reviews like normal code:
+
+```sh
+cd ~/work/app
+tasker init --name "App" --prefix APP   # creates ~/work/app/.tasker at the Git top level
+git add .tasker && git commit -m "Add Tasker board"
+```
+
+`tasker init` creates `.tasker/` at the nearest ancestor containing `.git` (or the current directory, or `--path`), writes a `.tasker/.gitignore` that excludes only the transient `.tasker-root.lock` and `.tasker-transactions/`, registers the board, and optionally creates the first project. Repeating it is a no-op. A plain Git repository never selects a root by itself, so repositories without a board keep using the global root. To move an older repository-local `tasker/` folder, run `git mv tasker .tasker`.
+
+### Listing every board
+
+Every board created by `tasker init`, or by `create project` inside a `.tasker` folder, is remembered in `registry.toml` in the configuration directory. The registry is only a list of paths: project files remain authoritative and missing entries are reported as warnings, never errors.
+
+```sh
+tasker list -o json            # current root first, then every registered board
+tasker list --stats -o json    # include task counts by state
+tasker root list -o json
+tasker root add ~/work/other/.tasker
+tasker root remove ~/work/retired/.tasker
+```
+
+`tasker list projects` still lists only the effective root, and `-p` selectors resolve within the effective root.
 
 ```sh
 tasker config show
@@ -42,7 +71,19 @@ tasker config get projects-root
 tasker config set projects-root ~/Development/tasker-projects
 ```
 
-`~` is expanded. Other overrides are `TASKER_PROJECT`, `TASKER_ACTOR`, and `TASKER_OUTPUT`. Do not run `config set` merely to develop Tasker; tests use isolated `TASKER_ROOT` directories.
+`~` is expanded. Other overrides are `TASKER_PROJECT`, `TASKER_ACTOR`, `TASKER_OUTPUT`, and `TASKER_CONFIG_DIR` (the directory holding `config.toml` and `registry.toml`). Do not run `config set` merely to develop Tasker; tests use isolated `TASKER_ROOT` and `TASKER_CONFIG_DIR` directories.
+
+## MCP server
+
+`tasker mcp` serves Tasker to Model Context Protocol clients over stdio. The client launches it and it exits when the client closes stdin. It opens no socket and keeps no state; every tool call runs the normal CLI code path, resolving the root afresh, so a `.tasker` board in the client's working directory is the default.
+
+```sh
+claude mcp add tasker -- tasker mcp
+# Pin a root instead of using workspace discovery:
+claude mcp add tasker -- tasker mcp --root ~/work/app/.tasker
+```
+
+Tools cover the agent loop: `tasker_list_boards`, `tasker_list_tasks`, `tasker_get_task`, `tasker_status`, `tasker_next`, `tasker_claim`, `tasker_create_task`, `tasker_update_task`, `tasker_transition`, `tasker_acceptance`, `tasker_context_add`, `tasker_dependency`, `tasker_search`, `tasker_brief`, `tasker_validate`, `tasker_changelog`, and `tasker_init`. `tasker_cli` runs any other command from an argument array. Failures come back with `isError: true` and the same structured error JSON as the CLI. Stdin belongs to the protocol, so commands that would read stdin fail; use `--file` or `--content` through `tasker_cli` instead.
 
 ## Quickstart
 
@@ -125,7 +166,7 @@ Ensure Cargo's binary directory (normally `~/.cargo/bin`) is on `PATH`, then rer
 Configuration precedence is:
 
 ```text
-TASKER_ROOT -> global projects-root -> ~/tasker
+TASKER_ROOT -> .tasker folder at/above the current directory -> global projects-root -> ~/tasker
 TASKER_OUTPUT -> global default-output -> human
 ```
 

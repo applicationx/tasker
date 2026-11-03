@@ -12,9 +12,12 @@ or background process. The optional `tasker ui` starts an explicit loopback-only
 
 AGENT QUICKSTART
 
-  # Discover projects or explicitly launch the optional local Web UI
+  # Keep a board in this repository, list every known board, or serve agents
+  tasker init --name "Example App" --prefix PEV
+  tasker list -o json
   tasker list projects -o json
   tasker ui start --open
+  tasker mcp
 
   # Find and atomically claim available work
   tasker next -p PEV -o json
@@ -89,7 +92,11 @@ PROJECT RESOLUTION AND CONFIGURATION
   Task and knowledge commands infer a project from --project, then an ID prefix,
   TASKER_PROJECT, or the nearest ancestor containing tasker.yaml. Project
   selectors accept a prefix, folder name, exact project name, or path.
-  Inspect workflow states, transitions, and relation types with:
+  The projects root resolves from TASKER_ROOT, then the nearest .tasker folder at
+  or above the current directory (created by `tasker init` and committed with
+  the code), then global config, then ~/tasker. Boards are remembered in a
+  non-authoritative registry (`tasker root list`) so `tasker list` can show
+  them all. Inspect workflow states, transitions, and relation types with:
     tasker get project PEV -o json --pretty
   Edit the returned config_file (tasker.yaml) to customize them, then run:
     tasker validate -p PEV -o json
@@ -114,7 +121,8 @@ ACTORS AND CONCURRENCY
 LEARN MORE
 
   Run tasker <command> --help and tasker <command> <subcommand> --help.
-  Useful starting points: tasker claim --help, tasker project brief --help,
+  Useful starting points: tasker init --help, tasker mcp --help,
+  tasker claim --help, tasker project brief --help,
   tasker create resource --help, tasker decision --help, tasker context-ref --help,
   tasker brief --help, tasker dependency --help, and tasker search --help.
 "#;
@@ -142,7 +150,7 @@ pub struct Cli {
 pub enum UiCommand {
     /// Start the root-scoped local Web UI, idempotently
     #[command(
-        long_about = "Start one optional transient Web UI child for the effective TASKER_ROOT. The child binds only 127.0.0.1 on an OS-assigned port, serves embedded offline assets, and never becomes required by normal CLI commands. Repeating start returns the verified existing instance; a nonce-authenticated child from an older Tasker version is stopped through its endpoint and replaced without PID killing.\n\nExamples:\n  tasker ui start\n  tasker ui start --open -o json"
+        long_about = "Start one optional transient Web UI child for the effective projects root. The child binds only 127.0.0.1 on an OS-assigned port, serves embedded offline assets, and never becomes required by normal CLI commands. Repeating start returns the verified existing instance; a nonce-authenticated child from an older Tasker version is stopped through its endpoint and replaced without PID killing.\n\nExamples:\n  tasker ui start\n  tasker ui start --open -o json"
     )]
     Start {
         /// Open the verified URL in the default browser after startup
@@ -151,12 +159,12 @@ pub enum UiCommand {
     },
     /// Stop the verified UI instance without blindly killing a PID
     #[command(
-        long_about = "Stop the UI instance for the effective TASKER_ROOT through its nonce-protected loopback shutdown endpoint, including a verified child from an older Tasker version. PID/state alone are never trusted, and there is intentionally no force-kill option.\n\nExample:\n  tasker ui stop"
+        long_about = "Stop the UI instance for the effective projects root through its nonce-protected loopback shutdown endpoint, including a verified child from an older Tasker version. PID/state alone are never trusted, and there is intentionally no force-kill option.\n\nExample:\n  tasker ui stop"
     )]
     Stop,
     /// Stop and start the root-scoped UI under one lifecycle lock
     #[command(
-        long_about = "Restart the UI for the effective TASKER_ROOT while serializing the full stop/start sequence. If no instance is running, this starts one normally.\n\nExamples:\n  tasker ui restart\n  tasker ui restart --open"
+        long_about = "Restart the UI for the effective projects root while serializing the full stop/start sequence. If no instance is running, this starts one normally.\n\nExamples:\n  tasker ui restart\n  tasker ui restart --open"
     )]
     Restart {
         /// Open the verified URL in the default browser after restart
@@ -165,7 +173,7 @@ pub enum UiCommand {
     },
     /// Verify UI liveness with both the instance lock and nonce health handshake
     #[command(
-        long_about = "Report whether the effective TASKER_ROOT UI is actually running. Status requires both a held instance lock and a matching nonce-authenticated loopback health response; stale transient state is cleaned only when the lock is free. A verified older server version remains manageable and is reported with a warning.\n\nExample:\n  tasker ui status -o json"
+        long_about = "Report whether the effective projects root UI is actually running. Status requires both a held instance lock and a matching nonce-authenticated loopback health response; stale transient state is cleaned only when the lock is free. A verified older server version remains manageable and is reported with a warning.\n\nExample:\n  tasker ui status -o json"
     )]
     Status,
     /// Internal detached UI child entry point
@@ -225,7 +233,7 @@ pub enum Command {
     },
     /// Read or update global configuration
     #[command(
-        long_about = "Read or update global configuration.\n\nThe project root resolves from TASKER_ROOT, then global config, then ~/tasker.\nThe default output resolves from --output, TASKER_OUTPUT, global config, then human.\n\nExamples:\n  tasker config show\n  tasker config get projects-root\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"
+        long_about = "Read or update global configuration.\n\nThe project root resolves from TASKER_ROOT, then the nearest .tasker folder at or above the current directory, then global config, then ~/tasker. `config show` reports which one applied as root_source (env, workspace, config, or default). TASKER_CONFIG_DIR overrides the configuration directory that holds config.toml and registry.toml.\nThe default output resolves from --output, TASKER_OUTPUT, global config, then human.\n\nExamples:\n  tasker config show\n  tasker config get projects-root\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"
     )]
     Config {
         #[command(subcommand)]
@@ -255,13 +263,38 @@ pub enum Command {
         #[command(subcommand)]
         command: EnsureCommand,
     },
-    /// List projects, tasks, users, resources, or decisions
+    /// List all known boards, or projects, tasks, users, resources, or decisions
     #[command(
-        long_about = "List project records deterministically from current files.\n\nProject listing is cheap and does not scan tasks unless --stats is used. Task, resource, and decision listing expose entity-specific filters and pagination.\n\nExamples:\n  tasker list projects -o json\n  tasker list tasks -p APP --ready --unassigned -o json\n  tasker list resources -p APP --status active -o json\n  tasker list decisions -p APP --status accepted -o json\n  tasker list users -p APP"
+        long_about = "List project records deterministically from current files.\n\nWithout a subcommand, list every known board: the effective projects root first (current: true), then each root in the registry, each with its projects. Registered roots that no longer exist are reported under warnings and never fail the command. `tasker list projects` lists only the effective root.\n\nProject listing is cheap and does not scan tasks unless --stats is used. Task, resource, and decision listing expose entity-specific filters and pagination.\n\nExamples:\n  tasker list -o json\n  tasker list --stats -o json\n  tasker list projects -o json\n  tasker list tasks -p APP --ready --unassigned -o json\n  tasker list resources -p APP --status active -o json\n  tasker list decisions -p APP --status accepted -o json\n  tasker list users -p APP"
     )]
     List {
+        /// With no subcommand, include task counts by state for every board
+        #[arg(long)]
+        stats: bool,
         #[command(subcommand)]
-        command: ListCommand,
+        command: Option<ListCommand>,
+    },
+    /// Create a repository-local .tasker board and register it
+    #[command(
+        long_about = "Create a .tasker board folder at the Git top level (the nearest ancestor containing .git, otherwise the current directory) or at --path. The folder is meant to be committed with the code; a .tasker/.gitignore excludes only transient lock and transaction files. The board is added to the registry so `tasker list` shows it from anywhere. With --name and --prefix the first project is created too. Repeating init is idempotent.\n\nExamples:\n  tasker init\n  tasker init --name \"Example App\" --prefix APP -o json\n  tasker init --path ../other-repo"
+    )]
+    Init(InitArgs),
+    /// Manage the registry of known board roots
+    #[command(
+        long_about = "Manage the non-authoritative registry of board roots that `tasker list` shows. The registry only remembers paths; project files remain authoritative and removing an entry never touches files. `tasker init` and creating a project inside a .tasker board register it automatically.\n\nExamples:\n  tasker root list -o json\n  tasker root add ~/work/app/.tasker\n  tasker root remove ~/work/old-app/.tasker"
+    )]
+    Root {
+        #[command(subcommand)]
+        command: RootCommand,
+    },
+    /// Serve Tasker tools to an MCP client over stdio
+    #[command(
+        long_about = "Run a Model Context Protocol server on stdin/stdout for the client that launched it. It is synchronous, opens no socket, makes no network request, keeps no state of its own, and exits when stdin closes. Each tool call runs the same code path as the CLI, resolving the projects root afresh, so a .tasker board in the client's working directory is used by default.\n\nExamples:\n  tasker mcp\n  tasker mcp --root ~/work/app/.tasker\n  claude mcp add tasker -- tasker mcp"
+    )]
+    Mcp {
+        /// Projects root to use instead of TASKER_ROOT or .tasker discovery
+        #[arg(long)]
+        root: Option<String>,
     },
     /// Get a project, task, user, resource, or decision
     #[command(
@@ -391,6 +424,42 @@ pub enum Command {
     Validate,
 }
 
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// Directory that receives .tasker; defaults to the Git top level or current directory
+    #[arg(long)]
+    pub path: Option<String>,
+    /// Also create a first project with this name (requires --prefix)
+    #[arg(long, requires = "prefix")]
+    pub name: Option<String>,
+    /// Prefix for the first project (requires --name)
+    #[arg(long, requires = "name")]
+    pub prefix: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RootCommand {
+    /// List registered board roots and whether each still exists
+    #[command(long_about = "List registered board roots.\n\nExample:\n  tasker root list -o json")]
+    List,
+    /// Register an existing board root directory
+    #[command(
+        long_about = "Register an existing directory as a board root. Repeating add is a no-op.\n\nExample:\n  tasker root add ~/work/app/.tasker"
+    )]
+    Add {
+        /// Existing projects root directory
+        path: String,
+    },
+    /// Forget a registered board root without touching any files
+    #[command(
+        long_about = "Remove a root from the registry. Files are never modified or deleted, and a root whose directory is gone can still be removed.\n\nExample:\n  tasker root remove ~/work/old-app/.tasker"
+    )]
+    Remove {
+        /// Registered root path
+        path: String,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     /// Show effective projects root, default output, and config file path
@@ -400,7 +469,7 @@ pub enum ConfigCommand {
     Show,
     /// Get projects-root, default-output, or config-file
     #[command(
-        long_about = "Get one effective setting. Readable keys: projects-root, default-output, and config-file. Hyphenated or underscored spelling is accepted.\n\nExamples:\n  tasker config get projects-root\n  tasker config get default-output\n  tasker config get config-file"
+        long_about = "Get one effective setting. Readable keys: projects-root, root-source, default-output, config-file, and registry-file. Hyphenated or underscored spelling is accepted.\n\nExamples:\n  tasker config get projects-root\n  tasker config get default-output\n  tasker config get config-file"
     )]
     Get {
         /// Readable key: projects-root, default-output, or config-file
@@ -408,7 +477,7 @@ pub enum ConfigCommand {
     },
     /// Persist projects-root or default-output in the OS config directory
     #[command(
-        long_about = "Persist projects-root or default-output. Hyphenated/underscored keys are accepted. TASKER_ROOT and TASKER_OUTPUT still take precedence. Paths beginning with ~ are expanded.\n\nExamples:\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"
+        long_about = "Persist projects-root or default-output. Hyphenated/underscored keys are accepted. TASKER_ROOT and a .tasker folder at or above the current directory still take precedence over projects-root. Paths beginning with ~ are expanded.\n\nExamples:\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"
     )]
     Set {
         /// Writable key: projects-root or default-output

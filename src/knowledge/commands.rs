@@ -1938,6 +1938,9 @@ fn required_body(content: Option<&str>, file: Option<&str>) -> Result<String> {
     }
 }
 fn piped_stdin() -> Result<String> {
+    if storage::stdin_reserved() {
+        return Err(AppError::input("stdin is reserved for the MCP protocol"));
+    }
     if std::io::stdin().is_terminal() {
         return Err(AppError::input("stdin is a terminal"));
     }

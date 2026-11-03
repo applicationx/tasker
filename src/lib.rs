@@ -2,7 +2,9 @@ mod app;
 mod cli;
 mod error;
 mod knowledge;
+mod mcp;
 mod model;
+mod registry;
 mod service;
 mod storage;
 mod transaction;
@@ -11,6 +13,16 @@ mod ui;
 pub use app::execute;
 pub use cli::{Cli, OutputFormat};
 pub use error::AppError;
+pub use mcp::serve as serve_mcp;
+
+/// Returns the requested root when the command is `tasker mcp`, which owns
+/// stdin/stdout and therefore runs outside the one-shot render path.
+pub fn mcp_request(cli: &Cli) -> Option<Option<&str>> {
+    match &cli.command {
+        cli::Command::Mcp { root } => Some(root.as_deref()),
+        _ => None,
+    }
+}
 
 use serde_json::Value;
 

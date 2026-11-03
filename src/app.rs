@@ -7,6 +7,7 @@ use chrono::{SecondsFormat, Utc};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub fn execute(cli: &Cli) -> Result<Value> {
     match &cli.command {
@@ -15,7 +16,19 @@ pub fn execute(cli: &Cli) -> Result<Value> {
         Command::Create { command } => create_command(cli, command),
         Command::Project { command } => crate::knowledge::commands::project_command(cli, command),
         Command::Ensure { command } => ensure_command(cli, command),
-        Command::List { command } => list_command(cli, command),
+        Command::List {
+            stats,
+            command: None,
+        } => list_boards(*stats),
+        Command::List {
+            command: Some(command),
+            ..
+        } => list_command(cli, command),
+        Command::Init(args) => init_command(cli, args),
+        Command::Root { command } => root_command(command),
+        Command::Mcp { .. } => Err(AppError::input(
+            "tasker mcp serves stdio and cannot run as a nested command",
+        )),
         Command::Get { command } => get_command(cli, command),
         Command::Update { command } => update_command(cli, command),
         Command::Archive { command } => match command {
@@ -94,7 +107,7 @@ fn ensure_command(cli: &Cli, command: &EnsureCommand) -> Result<Value> {
 
 fn list_command(cli: &Cli, command: &ListCommand) -> Result<Value> {
     match command {
-        ListCommand::Projects { stats } => list_projects(*stats),
+        ListCommand::Projects { stats } => list_projects_in(&storage::projects_root(), *stats),
         ListCommand::Tasks(filters) => {
             let project = project_for(cli, None)?;
             let (_lock, project) = lock_and_recover(project)?;
@@ -198,6 +211,19 @@ fn valid_prefix(prefix: &str) -> bool {
 }
 
 fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
+    let (root, source) = storage::projects_root_with_source();
+    let mut value = create_project_in(cli, args, &root)?;
+    // Best effort: a board created inside a .tasker folder becomes listable
+    // everywhere, but a registry problem never fails the project creation.
+    if source == storage::RootSource::Workspace
+        && let Err(error) = crate::registry::add(&root)
+    {
+        value["warnings"] = json!([problem("registry_update_failed", &error.message, json!({}))]);
+    }
+    Ok(value)
+}
+
+fn create_project_in(cli: &Cli, args: &CreateProjectArgs, root: &Path) -> Result<Value> {
     if args.name.trim().is_empty() {
         return Err(AppError::input("Project name cannot be empty"));
     }
@@ -205,8 +231,8 @@ fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
         return Err(AppError::input("Prefix must match ^[A-Z][A-Z0-9]{1,9}$")
             .detail("prefix", args.prefix.clone()));
     }
-    let _root_lock = storage::lock_projects_root()?;
-    if storage::discover_projects()?
+    let _root_lock = storage::lock_root(root)?;
+    if storage::discover_projects_in(root)?
         .iter()
         .any(|project| project.config.prefix.eq_ignore_ascii_case(&args.prefix))
     {
@@ -221,7 +247,7 @@ fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
         .path
         .as_deref()
         .map(storage::expand_path)
-        .unwrap_or_else(|| storage::projects_root().join(slug(&args.name)));
+        .unwrap_or_else(|| root.join(slug(&args.name)));
     if path.exists()
         && fs::read_dir(&path)
             .map(|mut entries| entries.next().is_some())
@@ -299,8 +325,8 @@ fn project_value(project: &Project) -> Result<Value> {
     Ok(value)
 }
 
-fn list_projects(stats: bool) -> Result<Value> {
-    let projects = storage::discover_projects()?;
+fn list_projects_in(root: &Path, stats: bool) -> Result<Value> {
+    let projects = storage::discover_projects_in(root)?;
     if !stats {
         return to_value(
             projects
@@ -326,6 +352,156 @@ fn list_projects(stats: bool) -> Result<Value> {
         );
     }
     Ok(Value::Array(values))
+}
+
+/// Lists the effective root and every registered root. Registered roots are
+/// hints only: a missing or unreadable one becomes a warning.
+fn list_boards(stats: bool) -> Result<Value> {
+    let (current, source) = storage::projects_root_with_source();
+    let current_display = crate::registry::display_path(&current);
+    let mut warnings = Vec::new();
+    let registered = match crate::registry::load() {
+        Ok(registry) => registry.roots,
+        Err(error) => {
+            warnings.push(problem("registry_unreadable", &error.message, json!({})));
+            Vec::new()
+        }
+    };
+    let mut boards = vec![json!({
+        "root": current_display,
+        "source": source.as_str(),
+        "current": true,
+        "registered": registered.iter().any(|root| root.path == current_display),
+        "projects": list_projects_in(&current, stats)?,
+    })];
+    for root in registered {
+        if root.path == current_display {
+            continue;
+        }
+        let path = PathBuf::from(&root.path);
+        if !path.is_dir() {
+            warnings.push(problem(
+                "registered_root_missing",
+                &format!("Registered board root {} no longer exists", root.path),
+                json!({"root": root.path, "suggestion": format!("tasker root remove \"{}\"", root.path)}),
+            ));
+            continue;
+        }
+        match list_projects_in(&path, stats) {
+            Ok(projects) => boards.push(json!({
+                "root": root.path,
+                "source": "registry",
+                "current": false,
+                "registered": true,
+                "projects": projects,
+            })),
+            Err(error) => warnings.push(problem(
+                "registered_root_unreadable",
+                &error.message,
+                json!({"root": root.path}),
+            )),
+        }
+    }
+    Ok(json!({"boards": boards, "warnings": warnings}))
+}
+
+const WORKSPACE_GITIGNORE: &str = "# Transient Tasker files. Everything else in .tasker is meant to be committed.\n.tasker-root.lock\n.tasker-transactions/\n";
+
+fn init_command(cli: &Cli, args: &InitArgs) -> Result<Value> {
+    let base = match &args.path {
+        Some(path) => storage::expand_path(path),
+        None => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| AppError::io(e, "cannot determine current directory"))?;
+            cwd.ancestors()
+                .find(|dir| dir.join(".git").exists())
+                .map(Path::to_path_buf)
+                .unwrap_or(cwd)
+        }
+    };
+    if !base.is_dir() {
+        return Err(
+            AppError::input(format!("{} is not an existing directory", base.display()))
+                .detail("path", base.to_string_lossy().to_string()),
+        );
+    }
+    let root = base.join(storage::WORKSPACE_DIR);
+    if root.exists() && !storage::is_real_dir(&root) {
+        return Err(AppError::new(
+            "workspace_root_invalid",
+            format!("{} exists but is not a directory", root.display()),
+            ErrorCategory::Conflict,
+        )
+        .detail("root", root.to_string_lossy().to_string()));
+    }
+    let created = !root.exists();
+    fs::create_dir_all(&root)
+        .map_err(|e| AppError::io(e, format!("cannot create {}", root.display())))?;
+    let gitignore = root.join(".gitignore");
+    let gitignore_written = !gitignore.exists();
+    if gitignore_written {
+        storage::atomic_write(&gitignore, WORKSPACE_GITIGNORE.as_bytes())?;
+    }
+    let mut warnings = Vec::new();
+    let registered = match crate::registry::add(&root) {
+        Ok((_, added)) => added,
+        Err(error) => {
+            warnings.push(problem("registry_update_failed", &error.message, json!({})));
+            false
+        }
+    };
+    let project = match (&args.name, &args.prefix) {
+        (Some(name), Some(prefix)) => {
+            let existing = storage::discover_projects_in(&root)?
+                .into_iter()
+                .find(|project| project.config.prefix.eq_ignore_ascii_case(prefix));
+            match existing {
+                Some(project) => project_value(&project)?,
+                None => create_project_in(
+                    cli,
+                    &CreateProjectArgs {
+                        name: name.clone(),
+                        prefix: prefix.clone(),
+                        path: None,
+                    },
+                    &root,
+                )?,
+            }
+        }
+        _ => Value::Null,
+    };
+    Ok(json!({
+        "root": crate::registry::display_path(&root),
+        "created": created,
+        "gitignore": gitignore_written,
+        "registered": registered,
+        "project": project,
+        "warnings": warnings,
+    }))
+}
+
+fn root_command(command: &RootCommand) -> Result<Value> {
+    match command {
+        RootCommand::List => {
+            let roots = crate::registry::load()?
+                .roots
+                .into_iter()
+                .map(|root| {
+                    let exists = Path::new(&root.path).is_dir();
+                    json!({"root": root.path, "exists": exists})
+                })
+                .collect();
+            Ok(Value::Array(roots))
+        }
+        RootCommand::Add { path } => {
+            let (root, added) = crate::registry::add(&storage::expand_path(path))?;
+            Ok(json!({"root": root, "added": added}))
+        }
+        RootCommand::Remove { path } => {
+            let (root, removed) = crate::registry::remove(&storage::expand_path(path))?;
+            Ok(json!({"root": root, "removed": removed}))
+        }
+    }
 }
 
 fn actor_name(cli: &Cli, command_actor: Option<&str>) -> String {
