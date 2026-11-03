@@ -14,10 +14,12 @@ AGENT QUICKSTART
 
   # Keep a board in this repository, list every known board, or serve agents
   tasker init --name "Example App" --prefix PEV
+  tasker --root ~/tasker create project "Side Notes" --prefix NOTE
   tasker list -o json
   tasker list projects -o json
   tasker ui start --open
   tasker mcp
+  tasker skill install --agent claude
 
   # Find and atomically claim available work
   tasker next -p PEV -o json
@@ -46,9 +48,15 @@ AGENT QUICKSTART
   tasker context-ref add PEV-12 PEV-D1 --role constrained_by
   tasker brief PEV-12 -o markdown
 
+  # Task types, blockers, and parents
+  tasker type list -p PEV -o json
+  tasker create task "Which cache?" -p PEV --type question --blocks PEV-12
+  tasker create task "Login works" -p PEV --type test_case --parent PEV-3
+
   # Users, dependencies, relations, workflow, and audit history
   tasker create user "Pi Backend" -p PEV --kind agent
   tasker dependency add PEV-12 PEV-7
+  tasker relation add PEV-7 blocks PEV-12
   tasker relation add PEV-12 subtask_of PEV-2
   tasker transition PEV-12 done --actor pi-backend
   tasker changelog --task PEV-12 -o json
@@ -78,6 +86,17 @@ PLANNING-TO-EXECUTION WORKFLOW
   tasker acceptance list PEV-1
   tasker transition PEV-1 done --actor pi-agent
 
+TASK TYPES AND BLOCKING
+
+  Every task has a type configured in tasker.yaml (task_types; defaults:
+  task, story, bug, question, test_case). Add one with `tasker type add`;
+  filter with --type. Relation types may restrict task types with
+  source_types/target_types (relation_type_mismatch otherwise).
+  `A blocked_by B` (stored as A's dependency on B; also `B blocks A`) keeps A
+  from being claimed, entering the claim state, or entering a
+  dependency-satisfying state until B is satisfied (dependencies_unsatisfied).
+  `tasker status A` shows blocked_by and blocks.
+
 KNOWLEDGE CONCEPTS
 
   PROJECT.md is the editable project purpose and direction. Resources catalog
@@ -92,11 +111,15 @@ PROJECT RESOLUTION AND CONFIGURATION
   Task and knowledge commands infer a project from --project, then an ID prefix,
   TASKER_PROJECT, or the nearest ancestor containing tasker.yaml. Project
   selectors accept a prefix, folder name, exact project name, or path.
-  The projects root resolves from TASKER_ROOT, then the nearest .tasker folder at
-  or above the current directory (created by `tasker init` and committed with
-  the code), then global config, then ~/tasker. Boards are remembered in a
-  non-authoritative registry (`tasker root list`) so `tasker list` can show
-  them all. Inspect workflow states, transitions, and relation types with:
+  The projects root resolves from --root, then TASKER_ROOT, then the nearest
+  .tasker folder at or above the current directory (created by `tasker init`
+  and committed with the code), then global config, then ~/tasker. A .tasker
+  board is optional. Selectors not found in the effective root are looked up
+  in the home root (global config or ~/tasker) and then in registered roots,
+  unless TASKER_ROOT is set.
+  Boards are remembered in a non-authoritative registry (`tasker root list`)
+  so `tasker list` can show them all, together with the home board.
+  Inspect workflow states, transitions, relation types, and task types with:
     tasker get project PEV -o json --pretty
   Edit the returned config_file (tasker.yaml) to customize them, then run:
     tasker validate -p PEV -o json
@@ -124,7 +147,8 @@ LEARN MORE
   Useful starting points: tasker init --help, tasker mcp --help,
   tasker claim --help, tasker project brief --help,
   tasker create resource --help, tasker decision --help, tasker context-ref --help,
-  tasker brief --help, tasker dependency --help, and tasker search --help.
+  tasker brief --help, tasker dependency --help, tasker type --help,
+  tasker skill --help, and tasker search --help.
 "#;
 
 #[derive(Debug, Parser)]
@@ -142,6 +166,9 @@ pub struct Cli {
     /// Pretty-print JSON machine output (YAML and human output are already readable)
     #[arg(long, global = true)]
     pub pretty: bool,
+    /// Projects root for this command; overrides TASKER_ROOT and .tasker discovery
+    #[arg(long, global = true, value_name = "PATH")]
+    pub root: Option<String>,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -233,7 +260,7 @@ pub enum Command {
     },
     /// Read or update global configuration
     #[command(
-        long_about = "Read or update global configuration.\n\nThe project root resolves from TASKER_ROOT, then the nearest .tasker folder at or above the current directory, then global config, then ~/tasker. `config show` reports which one applied as root_source (env, workspace, config, or default). TASKER_CONFIG_DIR overrides the configuration directory that holds config.toml and registry.toml.\nThe default output resolves from --output, TASKER_OUTPUT, global config, then human.\n\nExamples:\n  tasker config show\n  tasker config get projects-root\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"
+        long_about = "Read or update global configuration.\n\nThe project root resolves from --root, then TASKER_ROOT, then the nearest .tasker folder at or above the current directory, then global config, then ~/tasker. `config show` reports which one applied as root_source (flag, env, workspace, config, or default). TASKER_CONFIG_DIR overrides the configuration directory that holds config.toml and registry.toml.\nThe default output resolves from --output, TASKER_OUTPUT, global config, then human.\n\nExamples:\n  tasker config show\n  tasker config get projects-root\n  tasker config set projects-root ~/Development/projects\n  tasker config set default-output json"
     )]
     Config {
         #[command(subcommand)]
@@ -289,12 +316,44 @@ pub enum Command {
     },
     /// Serve Tasker tools to an MCP client over stdio
     #[command(
-        long_about = "Run a Model Context Protocol server on stdin/stdout for the client that launched it. It is synchronous, opens no socket, makes no network request, keeps no state of its own, and exits when stdin closes. Each tool call runs the same code path as the CLI, resolving the projects root afresh, so a .tasker board in the client's working directory is used by default.\n\nExamples:\n  tasker mcp\n  tasker mcp --root ~/work/app/.tasker\n  claude mcp add tasker -- tasker mcp"
+        long_about = "Run a Model Context Protocol server on stdin/stdout for the client that launched it. It is synchronous, opens no socket, makes no network request, keeps no state of its own, and exits when stdin closes. Each tool call runs the same code path as the CLI, resolving the projects root afresh, so a .tasker board in the client's working directory is used by default; every tool also accepts a root argument.\n\nClient setup:\n  Claude Code: claude mcp add tasker -- tasker mcp\n  Codex (~/.codex/config.toml):\n    [mcp_servers.tasker]\n    command = \"tasker\"\n    args = [\"mcp\"]\n  Cursor (.cursor/mcp.json):\n    {\"mcpServers\": {\"tasker\": {\"command\": \"tasker\", \"args\": [\"mcp\", \"--root\", \"${workspaceFolder}/.tasker\"]}}}\n\nExamples:\n  tasker mcp\n  tasker mcp --root ~/work/app/.tasker"
     )]
     Mcp {
         /// Projects root to use instead of TASKER_ROOT or .tasker discovery
         #[arg(long)]
         root: Option<String>,
+    },
+    /// List or add the task types configured for a project
+    #[command(
+        name = "type",
+        long_about = "Manage configured task types such as task, story, bug, question, and test_case. Types live in tasker.yaml under task_types with default_task_type; relation types may restrict which task types they connect with source_types/target_types. Remove or rename a type by editing tasker.yaml and running validate.
+
+Examples:
+  tasker type list -p APP -o json
+  tasker type add spike -p APP --label \"Spike\" --description \"Time-boxed investigation\"
+  tasker create task \"Which DB?\" -p APP --type question --blocks APP-4"
+    )]
+    Type {
+        #[command(subcommand)]
+        command: TypeCommand,
+    },
+    /// Print or install the agent skill that matches this Tasker version
+    #[command(
+        long_about = "Print or install the Tasker agent skill embedded in this binary, so Claude Code, Codex, and Cursor agents learn the current CLI. Installation writes one file and never touches project data. Without --repo the skill is installed for your user; with --repo it is written under the Git top level so it is committed with the code.
+
+Targets:
+  claude  ~/.claude/skills/tasker/SKILL.md      (--repo: .claude/skills/tasker/SKILL.md)
+  codex   ~/.agents/skills/tasker/SKILL.md      (--repo: .agents/skills/tasker/SKILL.md)
+  cursor  ~/.cursor/skills/tasker/SKILL.md      (--repo: .cursor/skills/tasker/SKILL.md)
+
+Examples:
+  tasker skill show
+  tasker skill install --agent claude
+  tasker skill install --agent cursor --repo -o json"
+    )]
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
     },
     /// Get a project, task, user, resource, or decision
     #[command(
@@ -359,7 +418,7 @@ pub enum Command {
     Unassign(MutateTaskArgs),
     /// Transition a task according to its configured workflow
     #[command(
-        long_about = "Change task state using transitions configured in tasker.yaml. Invalid transitions are rejected. Entering a dependency-satisfying state (default: done) requires all acceptance criteria to be checked. Unresolved dependencies do not prohibit manual transitions; inspect status/dependency check before completing work. Discover allowed transitions with status and all configured states with get project.\n\nExamples:\n  tasker status APP-12 -o json\n  tasker transition APP-12 in_progress --actor pi-agent\n  tasker acceptance list APP-12\n  tasker transition APP-12 done --actor pi-agent --if-revision 8"
+        long_about = "Change task state using transitions configured in tasker.yaml. Invalid transitions are rejected. Entering a dependency-satisfying state (default: done) requires all acceptance criteria to be checked. Entering workflow.claim_state or a dependency-satisfying state is rejected with dependencies_unsatisfied while the task is blocked by an unsatisfied task; other states (for example blocked or cancelled) remain reachable. Discover allowed transitions with status and all configured states with get project.\n\nExamples:\n  tasker status APP-12 -o json\n  tasker transition APP-12 in_progress --actor pi-agent\n  tasker acceptance list APP-12\n  tasker transition APP-12 done --actor pi-agent --if-revision 8"
     )]
     Transition(TransitionArgs),
     /// Atomically claim a task, or use `claim next` to claim available work
@@ -374,7 +433,7 @@ pub enum Command {
     Next(NextArgs),
     /// Manage first-class task dependencies
     #[command(
-        long_about = "Manage first-class blocking dependencies.\n\n'A depends on B' is stored only on A. A is dependency-blocked until B reaches\na workflow state with dependency_satisfied: true. Both IDs must belong to the\nsame project. Cross-project dependencies and cycles are rejected.\n\nExamples:\n  tasker dependency add APP-12 APP-4\n  tasker dependency check APP-12 -o json\n  tasker dependency list APP-12 --recursive\n  tasker dependency list APP-4 --reverse"
+        long_about = "Manage first-class blocking dependencies.\n\n'A depends on B' (A blocked_by B, B blocks A) is stored only on A. A is\ndependency-blocked until B reaches a workflow state with\ndependency_satisfied: true; until then A cannot be claimed, enter the claim\nstate, or be completed. Both IDs must belong to the same project.\nCross-project dependencies and cycles are rejected. `tasker relation add A\nblocked_by B` and `tasker relation add B blocks A` edit the same edge.\n\nExamples:\n  tasker dependency add APP-12 APP-4\n  tasker dependency check APP-12 -o json\n  tasker dependency list APP-12 --recursive\n  tasker dependency list APP-4 --reverse"
     )]
     Dependency {
         #[command(subcommand)]
@@ -398,7 +457,7 @@ pub enum Command {
     },
     /// Manage configured generic task relationships
     #[command(
-        long_about = "Manage non-blocking relationships configured in tasker.yaml.\n\nDefaults are subtask_of (inverse parent_of, acyclic) and relates_to (symmetric).\nOnly the outgoing relation is stored; incoming/inverse views are query-relative\nderived rows. Remove uses the original stored source, configured type, and target.\n\nExamples:\n  tasker relation add APP-12 subtask_of APP-3\n  tasker relation list APP-3 --direction incoming\n  tasker relation remove APP-12 subtask_of APP-3"
+        long_about = "Manage relationships configured in tasker.yaml, plus the blocking aliases.\n\nDefaults are subtask_of (inverse parent_of, acyclic) and relates_to (symmetric).\nA relation type may restrict task types with source_types/target_types.\nOnly the outgoing relation is stored; incoming/inverse views are query-relative\nderived rows. Remove uses the original stored source, configured type, and target.\nblocked_by and blocks are reserved: `A blocked_by B` and `B blocks A` add or\nremove A's dependency on B (--if-revision applies to A), and list shows them.\n\nExamples:\n  tasker relation add APP-12 subtask_of APP-3\n  tasker relation add APP-4 blocks APP-12\n  tasker relation list APP-3 --direction incoming\n  tasker relation remove APP-12 subtask_of APP-3"
     )]
     Relation {
         #[command(subcommand)]
@@ -461,6 +520,82 @@ pub enum RootCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum TypeCommand {
+    /// List configured task types with task counts
+    #[command(
+        long_about = "List configured task types, the default type, and how many tasks use each.
+
+Example:
+  tasker type list -p APP -o json"
+    )]
+    List,
+    /// Add a task type to the project's tasker.yaml
+    #[command(
+        long_about = "Add a task type under the project lock. NAME must match ^[a-z][a-z0-9_]*$. A legacy project without task_types first receives the implicit task type explicitly.
+
+Example:
+  tasker type add test_case -p APP --label \"Test case\""
+    )]
+    Add(TypeAddArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct TypeAddArgs {
+    /// Type name, for example question or test_case
+    pub name: String,
+    /// Display label; defaults to NAME
+    #[arg(long)]
+    pub label: Option<String>,
+    /// What tasks of this type are for
+    #[arg(long)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillCommand {
+    /// Print the embedded SKILL.md
+    #[command(long_about = "Print the embedded agent skill.
+
+Example:
+  tasker skill show")]
+    Show,
+    /// Write the embedded SKILL.md where an agent discovers skills
+    #[command(
+        long_about = "Write the embedded skill for one agent. An identical existing file is left untouched; a different one is refused with skill_exists unless --force.
+
+Examples:
+  tasker skill install --agent claude
+  tasker skill install --agent codex --repo
+  tasker skill install --agent cursor --path ./tmp-skills"
+    )]
+    Install(SkillInstallArgs),
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+#[clap(rename_all = "lower")]
+pub enum SkillAgent {
+    Claude,
+    Codex,
+    Cursor,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillInstallArgs {
+    /// Agent whose skill directory receives the file
+    #[arg(long, value_enum)]
+    pub agent: SkillAgent,
+    /// Install under the Git top level instead of your home directory
+    #[arg(long, conflicts_with = "path")]
+    pub repo: bool,
+    /// Install into DIR/tasker/SKILL.md instead of the agent default
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<String>,
+    /// Replace an existing different skill file
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     /// Show effective projects root, default output, and config file path
     #[command(
@@ -496,7 +631,7 @@ pub enum CreateCommand {
     Project(CreateProjectArgs),
     /// Create a task using flags or JSON/YAML input
     #[command(
-        long_about = "Create a task in workflow.initial_state and allocate the next prefixed ID under the project lock. Description says what to implement; acceptance criteria are measurable checkpoints. JSON/YAML accepts header (required), description, tags, acceptance_criteria (string array), and context_refs (typed objects). Direct flags override corresponding structured values; unknown fields are rejected. --context-ref uses ID:ROLE; --from uses informed_by. --file is used only with -i json|yaml.\n\nExamples:\n  tasker create task \"Implement parser\" -p APP --description \"Parse config files\" --tag cli\n  tasker create task \"Implement parser\" -p APP --acceptance-criterion \"Tests pass\"\n  tasker create task \"Implement plan\" -p APP --from APP-R1 --context-ref APP-D1:constrained_by\n  tasker create task -p APP -i json --file task.json -o json\n  tasker create task -p APP -i yaml < task.yaml -o yaml"
+        long_about = "Create a task in workflow.initial_state and allocate the next prefixed ID under the project lock. Description says what to implement; acceptance criteria are measurable checkpoints. --type picks a configured task type (default_task_type otherwise). --blocked-by and --blocks add dependencies in either direction and --parent adds subtask_of; cycles and relation type rules are checked before anything is written. JSON/YAML accepts header (required), type, description, tags, acceptance_criteria (string array), and context_refs (typed objects). Direct flags override corresponding structured values; unknown fields are rejected. --context-ref uses ID:ROLE; --from uses informed_by. --file is used only with -i json|yaml.\n\nExamples:\n  tasker create task \"Implement parser\" -p APP --description \"Parse config files\" --tag cli\n  tasker create task \"Implement parser\" -p APP --acceptance-criterion \"Tests pass\"\n  tasker create task \"Implement plan\" -p APP --from APP-R1 --context-ref APP-D1:constrained_by\n  tasker create task \"Which DB?\" -p APP --type question --blocks APP-4\n  tasker create task -p APP -i json --file task.json -o json\n  tasker create task -p APP -i yaml < task.yaml -o yaml"
     )]
     Task(CreateTaskArgs),
     /// Create a project-local user
@@ -574,6 +709,18 @@ pub struct CreateTaskArgs {
     /// Resource or decision ID to link with the informed_by role; repeat as needed
     #[arg(long = "from")]
     pub from: Vec<String>,
+    /// Task type configured in tasker.yaml; defaults to default_task_type
+    #[arg(long = "type", value_name = "TYPE")]
+    pub task_type: Option<String>,
+    /// Existing task that must finish before this one; repeat as needed
+    #[arg(long = "blocked-by", value_name = "TASK")]
+    pub blocked_by: Vec<String>,
+    /// Existing task that must wait for this one; repeat as needed
+    #[arg(long = "blocks", value_name = "TASK")]
+    pub blocks: Vec<String>,
+    /// Parent task; stores a subtask_of relation
+    #[arg(long, value_name = "TASK")]
+    pub parent: Option<String>,
     #[command(flatten)]
     pub input_args: InputArgs,
 }
@@ -640,6 +787,9 @@ pub struct TaskFilterArgs {
     /// Require tag; repeat for AND semantics
     #[arg(long = "tag")]
     pub tags: Vec<String>,
+    /// Match task type; repeat for OR semantics
+    #[arg(long = "type", value_name = "TYPE")]
+    pub types: Vec<String>,
     /// Match assignee by stable ID or case-insensitive name
     #[arg(long)]
     pub assignee: Option<String>,
@@ -667,7 +817,7 @@ pub struct TaskFilterArgs {
 pub enum GetCommand {
     /// Get project identity, workflow, relation types, and editable config path
     #[command(
-        long_about = "Get a project selected by prefix, folder, exact name, or path. Output includes workflow states, transitions, relation definitions, and config_file. To customize, edit tasker.yaml and run validate.\n\nExamples:\n  tasker get project APP -o json --pretty\n  tasker validate -p APP -o json"
+        long_about = "Get a project selected by prefix, folder, exact name, or path. Output includes workflow states, transitions, relation definitions, task types, and config_file. To customize, edit tasker.yaml and run validate.\n\nExamples:\n  tasker get project APP -o json --pretty\n  tasker validate -p APP -o json"
     )]
     Project {
         /// Prefix, folder, exact project name, or filesystem path
@@ -705,7 +855,7 @@ pub enum GetCommand {
 pub enum UpdateCommand {
     /// Patch only header, description, and tags
     #[command(
-        long_about = "Patch mutable task content only. This cannot change state, assignment, criteria, context, dependencies, relations, IDs, timestamps, or revision directly. JSON/YAML is a patch accepting only header, description, and tags; unknown/protected fields are rejected. Direct flags override structured values. --file is used only with -i json|yaml. With both --clear-tags and --tag, supplied tags win.\n\nExamples:\n  tasker update task APP-12 --description-file work.md --if-revision 4\n  echo '{\"header\":\"New header\",\"tags\":[\"backend\"]}' | tasker update task APP-12 -i json\n  tasker update task APP-12 -i yaml --file patch.yaml -o yaml"
+        long_about = "Patch mutable task content only. This cannot change state, assignment, criteria, context, dependencies, relations, IDs, timestamps, or revision directly. --type changes the task type after re-checking relation type rules. JSON/YAML is a patch accepting only header, description, tags, and type; unknown/protected fields are rejected. Direct flags override structured values. --file is used only with -i json|yaml. With both --clear-tags and --tag, supplied tags win.\n\nExamples:\n  tasker update task APP-12 --description-file work.md --if-revision 4\n  echo '{\"header\":\"New header\",\"tags\":[\"backend\"]}' | tasker update task APP-12 -i json\n  tasker update task APP-12 -i yaml --file patch.yaml -o yaml"
     )]
     Task(UpdateTaskArgs),
     /// Rename a user while retaining its stable ID
@@ -747,6 +897,9 @@ pub struct UpdateTaskArgs {
     /// Clear tags when no --tag values are supplied; supplied --tag values win
     #[arg(long)]
     pub clear_tags: bool,
+    /// Change the task type; existing relations must allow the new type
+    #[arg(long = "type", value_name = "TYPE")]
+    pub task_type: Option<String>,
     /// Fail with revision_conflict unless the task currently has this revision
     #[arg(long)]
     pub if_revision: Option<u64>,

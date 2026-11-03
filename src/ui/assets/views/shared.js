@@ -9,6 +9,10 @@ export function statusBadge(snapshot, state) {
   return tint(el("span", { className: "state-label", text: stateLabel(snapshot, state) }), stateColor(snapshot, state));
 }
 
+export function typePill(task) {
+  return task.type ? el("span", { className: "pill type-pill", text: task.type.replaceAll("_", " ") }) : null;
+}
+
 export function taskCard(ctx, record) {
   const { task, status = {} } = record;
   const unresolved = status.unresolved_dependencies || [];
@@ -18,6 +22,7 @@ export function taskCard(ctx, record) {
     el("span", { className: "task-card-title", text: task.header }),
     el("span", { className: "task-card-footer" },
       el("span", { className: "identifier", text: task.id }),
+      typePill(task),
       status.dependency_blocked ? el("span", { className: "blocked-pill", text: `blocked by ${unresolved.length || "?"}` }) : null,
       el("span", { className: "spacer" }),
       criteria.length ? el("span", { className: "task-card-ac", text: acceptanceLabel(task) }) : null,

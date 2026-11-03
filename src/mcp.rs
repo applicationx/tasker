@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const INSTRUCTIONS: &str = "Tasker is a local-first task board. The projects root defaults to the nearest .tasker folder in the workspace. Typical loop: tasker_list_tasks or tasker_next, tasker_claim, tasker_get_task and tasker_status, tasker_context_add while working, tasker_acceptance check, then tasker_transition to done. Pass if_revision on mutations to avoid overwriting concurrent edits. tasker_cli runs any other tasker command.";
+const INSTRUCTIONS: &str = "Tasker is a local-first task board. The projects root defaults to the nearest .tasker folder in the workspace, then the home board (config projects_root or ~/tasker); pass root on any tool to choose another board, and project (a prefix such as APP) to choose a project. Typical loop: tasker_list_tasks or tasker_next, tasker_claim, tasker_get_task and tasker_status, tasker_context_add while working, tasker_acceptance check, then tasker_transition to done. A task blocked_by unfinished tasks cannot be claimed, started, or completed; model blockers with tasker_dependency or tasker_relation (blocked_by/blocks). Task types (question, test_case, story...) come from tasker_task_types. Pass if_revision on mutations to avoid overwriting concurrent edits. tasker_cli runs any other tasker command.";
 
 /// Serves until stdin closes. `root` pins the projects root for every call.
 pub fn serve(root: Option<&str>) -> std::io::Result<()> {
@@ -95,7 +95,15 @@ fn call_tool(params: &Value) -> std::result::Result<Value, (i64, String)> {
     if !tool_definitions().iter().any(|tool| tool["name"] == name) {
         return Err((-32602, format!("Unknown tool: {name}")));
     }
-    let outcome = build_args(name, &Args(arguments))
+    let args = Args(arguments);
+    let outcome = build_args(name, &args)
+        .map(|mut argv| {
+            // Global flag: selects the board for this call only.
+            if let Some(root) = args.text("root") {
+                argv.insert(0, format!("--root={root}"));
+            }
+            argv
+        })
         .map_err(AppError::input)
         .and_then(run);
     Ok(match outcome {
@@ -231,14 +239,19 @@ fn build_args(name: &str, a: &Args) -> Result<Vec<String>, String> {
             .pos(Some(a.text("id").unwrap_or_else(|| "next".into()))),
         "tasker_create_task" => Argv::new(&["create", "task"])
             .opt("description", a.text("description"))
+            .opt("type", a.text("type"))
             .opts("tag", a.list("tags"))
             .opts("acceptance-criterion", a.list("acceptance_criteria"))
             .opts("context-ref", a.list("context_refs"))
+            .opts("blocked-by", a.list("blocked_by"))
+            .opts("blocks", a.list("blocks"))
+            .opt("parent", a.text("parent"))
             .common(a, false)
             .pos(Some(a.required("header")?)),
         "tasker_update_task" => Argv::new(&["update", "task"])
             .opt("header", a.text("header"))
             .opt("description", a.text("description"))
+            .opt("type", a.text("type"))
             .opts("tag", a.list("tags"))
             .switch("clear-tags", a.flag("clear_tags"))
             .common(a, true)
@@ -272,10 +285,18 @@ fn build_args(name: &str, a: &Args) -> Result<Vec<String>, String> {
             let action = a.required("action")?;
             let argv = Argv::new(&["dependency", action.as_str()]);
             match action.as_str() {
-                "add" | "remove" => argv
-                    .common(a, true)
-                    .pos(Some(a.required("id")?))
-                    .pos(Some(a.required("depends_on")?)),
+                "add" | "remove" => match (a.text("depends_on"), a.text("blocks")) {
+                    (Some(depends_on), None) => argv
+                        .common(a, true)
+                        .pos(Some(a.required("id")?))
+                        .pos(Some(depends_on)),
+                    // id blocks X is stored as X depends on id.
+                    (None, Some(blocked)) => argv
+                        .common(a, true)
+                        .pos(Some(blocked))
+                        .pos(Some(a.required("id")?)),
+                    _ => return Err("Pass exactly one of depends_on or blocks".into()),
+                },
                 "list" => argv
                     .switch("recursive", a.flag("recursive"))
                     .switch("reverse", a.flag("reverse"))
@@ -283,6 +304,34 @@ fn build_args(name: &str, a: &Args) -> Result<Vec<String>, String> {
                     .pos(Some(a.required("id")?)),
                 "check" => argv.common(a, false).pos(Some(a.required("id")?)),
                 other => return Err(format!("Unknown dependency action {other}")),
+            }
+        }
+        "tasker_relation" => {
+            let action = a.required("action")?;
+            let argv = Argv::new(&["relation", action.as_str()]);
+            match action.as_str() {
+                "add" | "remove" => argv
+                    .common(a, true)
+                    .pos(Some(a.required("id")?))
+                    .pos(Some(a.required("type")?))
+                    .pos(Some(a.required("target")?)),
+                "list" => argv
+                    .opt("direction", a.text("direction"))
+                    .common(a, false)
+                    .pos(Some(a.required("id")?)),
+                other => return Err(format!("Unknown relation action {other}")),
+            }
+        }
+        "tasker_task_types" => {
+            let action = a.text("action").unwrap_or_else(|| "list".into());
+            match action.as_str() {
+                "list" => Argv::new(&["type", "list"]).common(a, false),
+                "add" => Argv::new(&["type", "add"])
+                    .opt("label", a.text("label"))
+                    .opt("description", a.text("description"))
+                    .common(a, false)
+                    .pos(Some(a.required("name")?)),
+                other => return Err(format!("Unknown task type action {other}")),
             }
         }
         "tasker_search" => task_filters(Argv::new(&["search", "tasks"]), a)
@@ -311,9 +360,11 @@ fn build_args(name: &str, a: &Args) -> Result<Vec<String>, String> {
 fn task_filters(argv: Argv, a: &Args) -> Argv {
     argv.opts("state", a.list("states"))
         .opts("tag", a.list("tags"))
+        .opts("type", a.list("types"))
         .opt("assignee", a.text("assignee"))
         .switch("unassigned", a.flag("unassigned"))
         .switch("ready", a.flag("ready"))
+        .switch("dependency-blocked", a.flag("dependency_blocked"))
         .opt("limit", a.text("limit"))
         .switch("full", a.flag("full"))
 }
@@ -324,10 +375,16 @@ fn passthrough(args: Vec<String>) -> Result<Vec<String>, String> {
     let Some(first) = args.first() else {
         return Err("tasker_cli requires a non-empty args array".into());
     };
-    if matches!(first.as_str(), "ui" | "mcp")
+    if matches!(first.as_str(), "ui" | "mcp" | "skill")
         || (first == "config" && args.get(1).is_some_and(|a| a == "set"))
     {
         return Err(format!("tasker {first} is not available through MCP"));
+    }
+    if args
+        .iter()
+        .any(|a| a == "--root" || a.starts_with("--root="))
+    {
+        return Err("Pass root as the tool argument instead of --root".into());
     }
     if args
         .iter()
@@ -359,7 +416,14 @@ fn schema(properties: Value, required: &[&str], common: bool, revision: bool) ->
     json!({"type": "object", "properties": properties, "required": required})
 }
 
-fn tool(name: &str, description: &str, input_schema: Value) -> Value {
+/// Every tool accepts `root`, which becomes the global `--root` flag.
+fn tool(name: &str, description: &str, mut input_schema: Value) -> Value {
+    if let Some(properties) = input_schema["properties"].as_object_mut() {
+        properties.insert(
+            "root".into(),
+            json!({"type": "string", "description": "Projects root (board) for this call, e.g. /repo/.tasker or ~/tasker; defaults to the workspace .tasker, then the home board"}),
+        );
+    }
     json!({"name": name, "description": description, "inputSchema": input_schema})
 }
 
@@ -367,9 +431,11 @@ fn filter_properties() -> Value {
     json!({
         "states": {"type": "array", "items": {"type": "string"}, "description": "Match any of these workflow states"},
         "tags": {"type": "array", "items": {"type": "string"}, "description": "Require all of these tags"},
+        "types": {"type": "array", "items": {"type": "string"}, "description": "Match any of these task types"},
         "assignee": {"type": "string"},
         "unassigned": {"type": "boolean"},
         "ready": {"type": "boolean", "description": "Only tasks whose dependencies are satisfied"},
+        "dependency_blocked": {"type": "boolean", "description": "Only tasks blocked by an unfinished task"},
         "limit": {"type": "integer"},
         "full": {"type": "boolean", "description": "Return complete task objects"}
     })
@@ -428,14 +494,18 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "tasker_create_task",
-            "Create a task with an explicit contract: header, description, tags, and measurable acceptance criteria.",
+            "Create a task with an explicit contract: header, type, description, tags, measurable acceptance criteria, blockers, and an optional parent.",
             schema(
                 json!({
                     "header": text("Short task title"),
+                    "type": text("Task type from tasker_task_types, e.g. question or test_case; defaults to the project default"),
                     "description": text("What must be done"),
                     "tags": strings,
                     "acceptance_criteria": strings,
-                    "context_refs": {"type": "array", "items": {"type": "string"}, "description": "ID[:role] links to resources or decisions"}
+                    "context_refs": {"type": "array", "items": {"type": "string"}, "description": "ID[:role] links to resources or decisions"},
+                    "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Existing tasks that must finish first"},
+                    "blocks": {"type": "array", "items": {"type": "string"}, "description": "Existing tasks that must wait for this one"},
+                    "parent": text("Parent task; stored as subtask_of")
                 }),
                 &["header"],
                 true,
@@ -444,9 +514,9 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "tasker_update_task",
-            "Update a task's header, description, or tags.",
+            "Update a task's header, description, tags, or type.",
             schema(
-                json!({"id": id, "header": text("New header"), "description": text("New description"), "tags": strings, "clear_tags": {"type": "boolean"}}),
+                json!({"id": id, "header": text("New header"), "description": text("New description"), "type": text("New task type"), "tags": strings, "clear_tags": {"type": "boolean"}}),
                 &["id"],
                 true,
                 true,
@@ -489,18 +559,50 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "tasker_dependency",
-            "Add, remove, list, or check blocking dependencies. add means id depends on depends_on.",
+            "Add, remove, list, or check blocking dependencies. add with depends_on means id is blocked_by depends_on; add with blocks means id blocks that task. list with reverse shows what id blocks.",
             schema(
                 json!({
                     "action": {"type": "string", "enum": ["add", "remove", "list", "check"]},
                     "id": id,
-                    "depends_on": text("Prerequisite task ID for add/remove"),
+                    "depends_on": text("Task that id is blocked by, for add/remove"),
+                    "blocks": text("Task that id blocks, for add/remove (instead of depends_on)"),
                     "recursive": {"type": "boolean"},
                     "reverse": {"type": "boolean"}
                 }),
                 &["action", "id"],
                 true,
                 true,
+            ),
+        ),
+        tool(
+            "tasker_relation",
+            "Add, remove, or list task relations: configured types such as subtask_of and relates_to, plus blocked_by and blocks, which edit dependencies.",
+            schema(
+                json!({
+                    "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                    "id": text("Source task ID"),
+                    "type": text("Relation type, e.g. subtask_of, relates_to, blocked_by, blocks"),
+                    "target": text("Target task ID for add/remove"),
+                    "direction": {"type": "string", "enum": ["outgoing", "incoming", "both"]}
+                }),
+                &["action", "id"],
+                true,
+                true,
+            ),
+        ),
+        tool(
+            "tasker_task_types",
+            "List the project's configured task types (default action), or add one.",
+            schema(
+                json!({
+                    "action": {"type": "string", "enum": ["list", "add"]},
+                    "name": text("New type name for add, e.g. spike"),
+                    "label": text("Display label for add"),
+                    "description": text("What tasks of this type are for")
+                }),
+                &[],
+                true,
+                false,
             ),
         ),
         tool(

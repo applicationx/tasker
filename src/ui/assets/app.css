@@ -567,3 +567,4 @@ details .json-block { margin-top: 8px; }
   .app-shell { display: block; height: auto; }
   body, .card, .panel, .markdown-text, .json-block { background: #fff; color: #111; }
 }
+.type-pill { font-size: 10.5px; text-transform: capitalize; }

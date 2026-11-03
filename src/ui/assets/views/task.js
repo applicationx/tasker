@@ -8,7 +8,7 @@ import {
 } from "../model.js";
 import { decisionHref, projectHref, resourceHref, taskHref } from "../router.js";
 import {
-  dirtyForm, mutationUnavailable, parseTags, statusBadge, submitMutation, tagsInputValue,
+  dirtyForm, mutationUnavailable, parseTags, statusBadge, submitMutation, tagsInputValue, typePill,
 } from "./shared.js";
 
 const CONTEXT_COLORS = { context: "var(--cool)", progress: "var(--accent)", decision: "var(--ok)" };
@@ -49,6 +49,7 @@ export async function renderTask(ctx) {
     ),
     el("div", { className: "detail-title" },
       el("span", { className: "identifier", text: task.id }),
+      typePill(task),
       el("h1", { text: task.header, tabindex: "-1", dataset: { routeHeading: "true" } }),
     ),
     stateRow(ctx, task, status),

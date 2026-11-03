@@ -6,6 +6,7 @@ mod mcp;
 mod model;
 mod registry;
 mod service;
+mod skill;
 mod storage;
 mod transaction;
 mod ui;
@@ -111,9 +112,10 @@ pub(crate) fn render_brief_markdown(value: &Value) -> String {
     );
     if let Some(task) = value.get("task").filter(|task| !task.is_null()) {
         output.push_str(&format!(
-            "## Task {} — {}\n\n**State:** {}  \n**Assignee:** {}\n\n{}\n\n",
+            "## Task {} — {}\n\n**Type:** {}  \n**State:** {}  \n**Assignee:** {}\n\n{}\n\n",
             task["id"].as_str().unwrap_or(""),
             task["header"].as_str().unwrap_or(""),
+            task["type"].as_str().unwrap_or("task"),
             task["state"].as_str().unwrap_or(""),
             task["assignee"].as_str().unwrap_or("unassigned"),
             task["description"].as_str().unwrap_or("")
@@ -190,6 +192,12 @@ pub(crate) fn render_brief_markdown(value: &Value) -> String {
             "**Blocked:** {}\n\n",
             status["blocked"].as_bool().unwrap_or(false)
         ));
+        if let Some(blocks) = status["blocks"].as_array()
+            && !blocks.is_empty()
+        {
+            let ids: Vec<&str> = blocks.iter().filter_map(Value::as_str).collect();
+            output.push_str(&format!("**Blocks:** {}\n\n", ids.join(", ")));
+        }
         if let Some(dependencies) = value["dependencies"].as_array() {
             for dependency in dependencies {
                 output.push_str(&format!(
@@ -281,7 +289,10 @@ fn human_line(value: &Value) -> String {
             .get("assignee")
             .and_then(Value::as_str)
             .unwrap_or("-");
-        return format!("{id:<10} {state:<12} {assignee:<16} {header}");
+        return match object.get("type").and_then(Value::as_str) {
+            Some(kind) => format!("{id:<10} {kind:<10} {state:<12} {assignee:<16} {header}"),
+            None => format!("{id:<10} {state:<12} {assignee:<16} {header}"),
+        };
     }
     if let (Some(name), Some(prefix), Some(path)) = (
         object.get("name").and_then(Value::as_str),

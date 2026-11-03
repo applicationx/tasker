@@ -1,7 +1,7 @@
 import { avatar, button, clear, el, emptyState, pageHeader } from "../dom.js";
 import { acceptanceLabel, isTerminal, taskRecords, userFrom } from "../model.js";
 import { projectHref, taskHref } from "../router.js";
-import { statusBadge } from "./shared.js";
+import { statusBadge, typePill } from "./shared.js";
 
 const FILTERS = [
   { key: "unassigned", label: "Unassigned", test: ({ task }) => !task.assignee },
@@ -63,7 +63,7 @@ export function renderTasks(ctx) {
 function matches(ctx, record, state) {
   const { task } = record;
   const haystack = [
-    task.id, task.header, task.description, ...(task.tags || []),
+    task.id, task.type, task.header, task.description, ...(task.tags || []),
     ...(task.acceptance_criteria || []).map((item) => item.text),
     ...(task.context || []).map((item) => item.message),
     ...(task.context_refs || []).map((item) => item.id),
@@ -126,6 +126,7 @@ function row(ctx, { task, status = {} }) {
   return el("a", { className: "data-row", href: taskHref(ctx.prefix, task.id) },
     el("span", { className: "identifier", text: task.id }),
     el("span", { className: "task-title" },
+      typePill(task),
       el("span", { text: task.header }),
       (task.tags || []).slice(0, 2).map((tag) => el("span", { className: "tag", text: tag })),
     ),

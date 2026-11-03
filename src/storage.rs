@@ -8,8 +8,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -125,6 +125,7 @@ pub const WORKSPACE_DIR: &str = ".tasker";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootSource {
+    Flag,
     Env,
     Workspace,
     Config,
@@ -133,6 +134,7 @@ pub enum RootSource {
 impl RootSource {
     pub fn as_str(self) -> &'static str {
         match self {
+            RootSource::Flag => "flag",
             RootSource::Env => "env",
             RootSource::Workspace => "workspace",
             RootSource::Config => "config",
@@ -157,12 +159,36 @@ pub fn is_real_dir(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !is_symlink_or_reparse(&m))
 }
 static ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+static SCOPED_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 static STDIN_RESERVED: AtomicBool = AtomicBool::new(false);
 
 /// Pins the projects root for this process (`tasker mcp --root`); it ranks
 /// with TASKER_ROOT as an explicit environment choice.
 pub fn override_projects_root(root: PathBuf) {
     let _ = ROOT_OVERRIDE.set(root);
+}
+
+/// Restores the previous `--root` override when one command finishes.
+pub struct ScopedRoot {
+    previous: Option<PathBuf>,
+}
+impl Drop for ScopedRoot {
+    fn drop(&mut self) {
+        if let Ok(mut current) = SCOPED_ROOT.lock() {
+            *current = self.previous.take();
+        }
+    }
+}
+/// Applies the global `--root` flag for the duration of one command, so an
+/// MCP session can address a different board on every tool call.
+pub fn scoped_root(root: PathBuf) -> ScopedRoot {
+    let mut current = SCOPED_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    ScopedRoot {
+        previous: current.replace(root),
+    }
+}
+fn scoped_root_value() -> Option<PathBuf> {
+    SCOPED_ROOT.lock().ok().and_then(|root| root.clone())
 }
 /// Marks stdin as owned by a protocol (`tasker mcp`) so commands never
 /// consume it as structured input or Markdown bodies.
@@ -173,6 +199,9 @@ pub fn stdin_reserved() -> bool {
     STDIN_RESERVED.load(Ordering::SeqCst)
 }
 pub fn projects_root_with_source() -> (PathBuf, RootSource) {
+    if let Some(root) = scoped_root_value() {
+        return (root, RootSource::Flag);
+    }
     if let Some(root) = ROOT_OVERRIDE.get() {
         return (root.clone(), RootSource::Env);
     }
@@ -182,6 +211,10 @@ pub fn projects_root_with_source() -> (PathBuf, RootSource) {
     if let Some(root) = discover_workspace_root() {
         return (root, RootSource::Workspace);
     }
+    home_root_with_source()
+}
+/// The root outside any repository: global config `projects_root`, else `~/tasker`.
+pub fn home_root_with_source() -> (PathBuf, RootSource) {
     if let Some(s) = load_global_config().projects_root {
         return (expand_path(&s), RootSource::Config);
     }
@@ -189,6 +222,39 @@ pub fn projects_root_with_source() -> (PathBuf, RootSource) {
         .map(|b| b.home_dir().join("tasker"))
         .unwrap_or_else(|| PathBuf::from("tasker"));
     (root, RootSource::Default)
+}
+/// Roots searched for a project selector, in priority tiers: the effective
+/// root, then the home root, then registered roots. Duplicates are dropped.
+/// TASKER_ROOT isolates: with it set, only the effective root is searched.
+fn selector_root_tiers() -> Vec<Vec<PathBuf>> {
+    if std::env::var_os("TASKER_ROOT").is_some() {
+        return vec![vec![projects_root()]];
+    }
+    let canonical = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut seen = std::collections::HashSet::new();
+    let mut tiers = Vec::new();
+    let mut push_tier = |roots: Vec<PathBuf>, tiers: &mut Vec<Vec<PathBuf>>| {
+        let tier: Vec<PathBuf> = roots
+            .into_iter()
+            .filter(|root| root.is_dir() && seen.insert(canonical(root)))
+            .collect();
+        if !tier.is_empty() {
+            tiers.push(tier);
+        }
+    };
+    push_tier(vec![projects_root()], &mut tiers);
+    push_tier(vec![home_root_with_source().0], &mut tiers);
+    let registered = crate::registry::load()
+        .map(|registry| {
+            registry
+                .roots
+                .into_iter()
+                .map(|root| PathBuf::from(root.path))
+                .collect()
+        })
+        .unwrap_or_default();
+    push_tier(registered, &mut tiers);
+    tiers
 }
 pub fn projects_root() -> PathBuf {
     projects_root_with_source().0
@@ -278,16 +344,31 @@ pub fn resolve_selector(s: &str) -> Result<Project> {
         return load_project(&direct);
     }
     let low = s.to_lowercase();
-    let found: Vec<_> = discover_projects()?
+    let matches = |p: &Project| {
+        p.config.prefix.eq_ignore_ascii_case(s)
+            || p.config.name.to_lowercase() == low
+            || p.path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().to_lowercase() == low)
+    };
+    let mut found: Vec<Project> = discover_projects()?
         .into_iter()
-        .filter(|p| {
-            p.config.prefix.eq_ignore_ascii_case(s)
-                || p.config.name.to_lowercase() == low
-                || p.path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().to_lowercase() == low)
-        })
+        .filter(|p| matches(p))
         .collect();
+    if found.is_empty() {
+        // Boards elsewhere (home root, registry) are hints: unreadable ones are skipped.
+        for tier in selector_root_tiers().into_iter().skip(1) {
+            found = tier
+                .iter()
+                .filter_map(|root| discover_projects_in(root).ok())
+                .flatten()
+                .filter(|p| matches(p))
+                .collect();
+            if !found.is_empty() {
+                break;
+            }
+        }
+    }
     if found.is_empty() {
         // A partially readable YAML document can still identify its project for
         // `tasker validate`, which then reports the full typed-config error.
@@ -322,7 +403,16 @@ pub fn resolve_selector(s: &str) -> Result<Project> {
             format!("Project selector {s} is ambiguous"),
             ErrorCategory::Conflict,
         )
-        .detail("project", s.to_string())),
+        .detail("project", s.to_string())
+        .detail(
+            "candidates",
+            serde_json::json!(
+                found
+                    .iter()
+                    .map(|p| p.path.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+            ),
+        )),
     }
 }
 fn project_not_found(s: &str) -> AppError {

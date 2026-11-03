@@ -32,12 +32,22 @@ Tasker uses Rust 2024. `Cargo.lock` is committed because this is an application.
 
 Tasker discovers project folders directly below `projects_root`. The root is selected in this order:
 
-1. `TASKER_ROOT`
-2. the nearest `.tasker` folder at or above the current directory (a real directory, not a symlink; the home directory's own `.tasker` is ignored)
-3. the global configuration file in the OS-specific application config directory
-4. `~/tasker`
+1. the global `--root PATH` flag (one command), or `tasker mcp --root PATH`
+2. `TASKER_ROOT`
+3. the nearest `.tasker` folder at or above the current directory (a real directory, not a symlink; the home directory's own `.tasker` is ignored)
+4. the global configuration file in the OS-specific application config directory (`projects_root`)
+5. `~/tasker`
 
-`tasker config show` reports which one applied as `root_source` (`env`, `workspace`, `config`, or `default`).
+`tasker config show` reports which one applied as `root_source` (`flag`, `env`, `workspace`, `config`, or `default`). Entries 4 and 5 form the *home board*: the place for projects you do not want inside a code repository. A `.tasker` board is optional.
+
+```sh
+# Inside a repository that has .tasker, put a project on the home board instead:
+tasker --root ~/tasker create project "Side Notes" --prefix NOTE
+# ...and keep using it from the repository by prefix:
+tasker create task "Write up findings" -p NOTE
+```
+
+When a project selector (`-p NOTE`, or the prefix of a task ID such as `NOTE-4`) is not found in the effective root, Tasker looks in the home board and then in registered boards. The first tier with a match wins; two matches in one tier fail with `project_ambiguous` and list the candidates. Setting `TASKER_ROOT` disables this lookup, so it stays an isolation switch.
 
 ### Boards committed with the code
 
@@ -63,7 +73,7 @@ tasker root add ~/work/other/.tasker
 tasker root remove ~/work/retired/.tasker
 ```
 
-`tasker list projects` still lists only the effective root, and `-p` selectors resolve within the effective root.
+`tasker list` also shows the home board when it exists and differs from the current root. `tasker list projects` still lists only the effective root.
 
 ```sh
 tasker config show
@@ -77,13 +87,43 @@ tasker config set projects-root ~/Development/tasker-projects
 
 `tasker mcp` serves Tasker to Model Context Protocol clients over stdio. The client launches it and it exits when the client closes stdin. It opens no socket and keeps no state; every tool call runs the normal CLI code path, resolving the root afresh, so a `.tasker` board in the client's working directory is the default.
 
+Claude Code:
+
 ```sh
 claude mcp add tasker -- tasker mcp
 # Pin a root instead of using workspace discovery:
 claude mcp add tasker -- tasker mcp --root ~/work/app/.tasker
 ```
 
-Tools cover the agent loop: `tasker_list_boards`, `tasker_list_tasks`, `tasker_get_task`, `tasker_status`, `tasker_next`, `tasker_claim`, `tasker_create_task`, `tasker_update_task`, `tasker_transition`, `tasker_acceptance`, `tasker_context_add`, `tasker_dependency`, `tasker_search`, `tasker_brief`, `tasker_validate`, `tasker_changelog`, and `tasker_init`. `tasker_cli` runs any other command from an argument array. Failures come back with `isError: true` and the same structured error JSON as the CLI. Stdin belongs to the protocol, so commands that would read stdin fail; use `--file` or `--content` through `tasker_cli` instead.
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.tasker]
+command = "tasker"
+args = ["mcp"]
+```
+
+Cursor (`.cursor/mcp.json` in the repository; `${workspaceFolder}` pins the repository board even if Cursor starts the server elsewhere):
+
+```json
+{ "mcpServers": { "tasker": { "command": "tasker", "args": ["mcp", "--root", "${workspaceFolder}/.tasker"] } } }
+```
+
+Tools cover the agent loop: `tasker_list_boards`, `tasker_list_tasks`, `tasker_get_task`, `tasker_status`, `tasker_next`, `tasker_claim`, `tasker_create_task` (with `type`, `blocked_by`, `blocks`, `parent`), `tasker_update_task`, `tasker_transition`, `tasker_acceptance`, `tasker_context_add`, `tasker_dependency`, `tasker_relation`, `tasker_task_types`, `tasker_search`, `tasker_brief`, `tasker_validate`, `tasker_changelog`, and `tasker_init`. Every tool accepts an optional `root` that selects a board for that call only. `tasker_cli` runs any other command from an argument array. Failures come back with `isError: true` and the same structured error JSON as the CLI. Stdin belongs to the protocol, so commands that would read stdin fail; use `--file` or `--content` through `tasker_cli` instead.
+
+## Agent skill
+
+The binary embeds a `tasker` skill (`skills/tasker/SKILL.md`) that teaches agents the current CLI, board locations, blocking, and task types. Install it for the agent you use; it always matches the installed Tasker version:
+
+```sh
+tasker skill show                         # print it
+tasker skill install --agent claude       # ~/.claude/skills/tasker/SKILL.md
+tasker skill install --agent codex        # ~/.agents/skills/tasker/SKILL.md
+tasker skill install --agent cursor       # ~/.cursor/skills/tasker/SKILL.md
+tasker skill install --agent claude --repo   # .claude/skills/tasker/SKILL.md in this repository
+```
+
+With `--repo` the skill goes under the Git top level (`.claude/skills`, `.agents/skills`, or `.cursor/skills`) so it is committed with the code. An existing different file is kept unless you pass `--force`. Agents can use the CLI with the skill, the MCP server, or both.
 
 ## Quickstart
 
@@ -166,7 +206,7 @@ Ensure Cargo's binary directory (normally `~/.cargo/bin`) is on `PATH`, then rer
 Configuration precedence is:
 
 ```text
-TASKER_ROOT -> .tasker folder at/above the current directory -> global projects-root -> ~/tasker
+--root -> TASKER_ROOT -> .tasker folder at/above the current directory -> global projects-root -> ~/tasker
 TASKER_OUTPUT -> global default-output -> human
 ```
 
@@ -456,7 +496,7 @@ Each project has a human-editable `tasker.yaml`. Its workflow defines:
 
 The default states are `backlog`, `ready`, `in_progress`, `blocked`, `done`, and `cancelled`. Tasker never bypasses configured transitions. Edit YAML to customize the workflow, then run `tasker validate -p APP`.
 
-Task content updates are deliberately restricted to `header`, `description`, and `tags`. The description states what should be done. Measurable completion checkpoints are managed through dedicated `acceptance` commands, while append-only agent reports and decisions use `context`. Use dedicated `assign`, `unassign`, `transition`, `dependency`, and `relation` commands for other protected domain fields. Mutating task commands support `--if-revision N` for optimistic concurrency.
+Task content updates are deliberately restricted to `header`, `description`, `tags`, and `type`. The description states what should be done. Measurable completion checkpoints are managed through dedicated `acceptance` commands, while append-only agent reports and decisions use `context`. Use dedicated `assign`, `unassign`, `transition`, `dependency`, and `relation` commands for other protected domain fields. Mutating task commands support `--if-revision N` for optimistic concurrency.
 
 ## Users, assignment, and actors
 
@@ -474,18 +514,47 @@ tasker unassign APP-1
 
 Names are case-insensitively unique. `ensure user` is idempotent. Assignment and claims automatically create unknown users. Mutation actors resolve from `--actor`, `TASKER_ACTOR`, command-specific `--as`, then the OS username.
 
-## Dependencies and readiness
+## Task types
+
+Every task has a `type`. Types are configured per project in `tasker.yaml`; new projects get `task` (the default), `story`, `bug`, `question`, and `test_case`:
+
+```yaml
+default_task_type: task
+task_types:
+  question:
+    label: Question
+    description: An open question; make it block the tasks that need the answer
+  test_case:
+    label: Test case
+```
 
 ```sh
-tasker dependency add APP-2 APP-1       # APP-2 depends on APP-1
+tasker type list -p APP -o json
+tasker type add spike -p APP --label "Spike" --description "Time-boxed investigation"
+tasker create task "Which cache?" -p APP --type question --blocks APP-12
+tasker update task APP-7 --type story
+tasker list tasks -p APP --type question --type bug -o json
+```
+
+Projects created before task types have the single implicit type `task`, and task files without `type` read as `task`. Remove or rename a type by editing `tasker.yaml`; `tasker validate` reports tasks whose type no longer exists.
+
+## Dependencies: blocked_by and blocks
+
+```sh
+tasker dependency add APP-2 APP-1       # APP-2 blocked_by APP-1 (APP-1 blocks APP-2)
+tasker relation add APP-2 blocked_by APP-1   # same edge
+tasker relation add APP-1 blocks APP-2       # same edge, written from the blocker
+tasker create task "Decide API" -p APP --type question --blocks APP-2
+tasker create task "Ship it" -p APP --blocked-by APP-1 --blocked-by APP-2
 tasker dependency list APP-2
 tasker dependency list APP-2 --recursive
-tasker dependency list APP-1 --reverse
+tasker dependency list APP-1 --reverse  # what APP-1 blocks
 tasker dependency check APP-2 -o json
+tasker status APP-2 -o json             # blocked_by with states, blocks
 tasker dependency remove APP-2 APP-1
 ```
 
-A dependency is satisfied only when its target state has `dependency_satisfied: true` (by default, `done` does and `cancelled` does not). Dependency blocking is derived and does not rewrite workflow state. Self-dependencies and direct or transitive cycles are rejected atomically.
+A dependency is stored once, on the blocked task. It is satisfied only when its target state has `dependency_satisfied: true` (by default, `done` does and `cancelled` does not). While any blocker is unsatisfied, the task cannot be claimed, transitioned into `claim_state`, or transitioned into a dependency-satisfying state; those attempts fail with `dependencies_unsatisfied`. Other transitions, such as to `blocked` or `cancelled`, stay available. Self-dependencies and direct or transitive cycles are rejected atomically, including for `create task --blocked-by/--blocks`.
 
 ## Acceptance criteria and task context
 
@@ -524,7 +593,21 @@ tasker relation list APP-2 --direction incoming
 tasker relation remove APP-3 relates_to APP-1
 ```
 
-`subtask_of` is acyclic and derives the inverse label `parent_of`; `relates_to` is symmetric. Relation types, inverse labels, symmetry, and acyclicity are configured in `tasker.yaml`. Inverses are derived rather than duplicated into a second task file.
+`subtask_of` is acyclic and derives the inverse label `parent_of`; `relates_to` is symmetric. Relation types, inverse labels, symmetry, and acyclicity are configured in `tasker.yaml`. Inverses are derived rather than duplicated into a second task file. `create task --parent APP-2` adds `subtask_of` at creation.
+
+A relation type can restrict the task types it connects. An empty or missing list allows any type:
+
+```yaml
+relations:
+  subtask_of:
+    inverse_label: parent_of
+    symmetric: false
+    acyclic: true
+    source_types: [test_case, task]
+    target_types: [story]
+```
+
+Violations fail with `relation_type_mismatch`, including when `update task --type` would break an existing relation. `blocked_by` and `blocks` are reserved for dependencies and cannot be configured as relation types; `relation list` shows them as derived rows.
 
 ## Agent claiming
 

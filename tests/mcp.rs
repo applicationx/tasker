@@ -13,6 +13,13 @@ struct Server {
 
 impl Server {
     fn start(dir: &Path, config: &Path) -> Self {
+        // Keep a real ~/tasker or user config out of the test.
+        let file = config.join("config.toml");
+        if !file.exists() {
+            std::fs::create_dir_all(config).unwrap();
+            let home = config.join("no-home-board");
+            std::fs::write(&file, format!("projects_root = '{}'\n", home.display())).unwrap();
+        }
         let mut child = Command::new(env!("CARGO_BIN_EXE_tasker"))
             .arg("mcp")
             .current_dir(dir)
@@ -145,6 +152,141 @@ fn mcp_server_runs_cli_tools_against_the_workspace_board() {
 
     let unknown = server.request("does/not/exist", json!({}));
     assert_eq!(unknown["error"]["code"], -32601);
+
+    drop(server.stdin.take());
+    assert!(server.child.wait().unwrap().success());
+}
+
+#[test]
+fn mcp_tools_cover_types_blockers_relations_and_per_call_roots() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let repo = temp.path().join("repo");
+    let other = temp.path().join("other-board");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let mut server = Server::start(&repo, &config);
+    server.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+
+    let tools = server.request("tools/list", json!({}));
+    for tool in tools["result"]["tools"].as_array().unwrap() {
+        assert!(
+            tool["inputSchema"]["properties"]["root"].is_object(),
+            "{} lacks root",
+            tool["name"]
+        );
+    }
+
+    let (error, value) = server.call("tasker_init", json!({"name": "App", "prefix": "APP"}));
+    assert!(!error, "{value}");
+    let (error, types) = server.call("tasker_task_types", json!({"project": "APP"}));
+    assert!(!error, "{types}");
+    assert!(
+        types
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "question")
+    );
+    let (error, value) = server.call(
+        "tasker_task_types",
+        json!({"project": "APP", "action": "add", "name": "spike", "label": "Spike"}),
+    );
+    assert!(!error, "{value}");
+
+    let (error, story) = server.call(
+        "tasker_create_task",
+        json!({"project": "APP", "header": "Story", "type": "story"}),
+    );
+    assert!(!error, "{story}");
+    let (error, question) = server.call(
+        "tasker_create_task",
+        json!({"project": "APP", "header": "Which DB?", "type": "question", "blocks": ["APP-1"]}),
+    );
+    assert!(!error, "{question}");
+    let (error, case) = server.call(
+        "tasker_create_task",
+        json!({"project": "APP", "header": "Case", "type": "test_case", "parent": "APP-1", "blocked_by": ["APP-2"]}),
+    );
+    assert!(!error, "{case}");
+    assert_eq!(case["dependencies"], json!(["APP-2"]));
+
+    let (error, blocked) = server.call(
+        "tasker_list_tasks",
+        json!({"project": "APP", "dependency_blocked": true, "types": ["story", "test_case"]}),
+    );
+    assert!(!error, "{blocked}");
+    assert_eq!(blocked.as_array().unwrap().len(), 2);
+    let (error, refused) = server.call(
+        "tasker_transition",
+        json!({"id": "APP-1", "state": "in_progress"}),
+    );
+    assert!(error);
+    assert_eq!(refused["error"]["code"], "dependencies_unsatisfied");
+
+    // Dependency and relation tools speak blocked_by/blocks.
+    let (error, value) = server.call(
+        "tasker_create_task",
+        json!({"project": "APP", "header": "Spike it", "type": "spike"}),
+    );
+    assert!(!error, "{value}");
+    let (error, value) = server.call(
+        "tasker_dependency",
+        json!({"action": "add", "id": "APP-4", "blocks": "APP-1"}),
+    );
+    assert!(!error, "{value}");
+    assert_eq!(value["id"], "APP-1");
+    let (error, rows) = server.call(
+        "tasker_relation",
+        json!({"action": "list", "id": "APP-1", "direction": "outgoing"}),
+    );
+    assert!(!error, "{rows}");
+    assert_eq!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["type"] == "blocked_by")
+            .count(),
+        2
+    );
+    let (error, value) = server.call(
+        "tasker_relation",
+        json!({"action": "remove", "id": "APP-4", "type": "blocks", "target": "APP-1"}),
+    );
+    assert!(!error, "{value}");
+    let (error, value) = server.call(
+        "tasker_relation",
+        json!({"action": "add", "id": "APP-4", "type": "relates_to", "target": "APP-2"}),
+    );
+    assert!(!error, "{value}");
+
+    // root selects another board for a single call only.
+    let other_text = other.to_string_lossy().to_string();
+    let (error, value) = server.call(
+        "tasker_cli",
+        json!({"root": other_text, "args": ["create", "project", "Other", "--prefix", "OTH"]}),
+    );
+    assert!(!error, "{value}");
+    assert!(other.join("other/tasker.yaml").is_file());
+    let (error, value) = server.call(
+        "tasker_create_task",
+        json!({"root": other_text, "project": "OTH", "header": "Elsewhere"}),
+    );
+    assert!(!error, "{value}");
+    assert!(other.join("other/tasks/OTH-1.json").is_file());
+    let (error, listed) = server.call("tasker_list_tasks", json!({"project": "APP"}));
+    assert!(!error, "{listed}");
+    assert_eq!(listed.as_array().unwrap().len(), 4);
+    let (error, refused) = server.call(
+        "tasker_cli",
+        json!({"args": ["--root", other_text, "list", "projects"]}),
+    );
+    assert!(error, "{refused}");
+    let (error, refused) = server.call(
+        "tasker_cli",
+        json!({"args": ["skill", "install", "--agent", "claude"]}),
+    );
+    assert!(error, "{refused}");
 
     drop(server.stdin.take());
     assert!(server.child.wait().unwrap().success());

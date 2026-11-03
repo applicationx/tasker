@@ -1474,7 +1474,7 @@ fn assemble_brief(
             warning["message"].as_str().unwrap_or("").to_string(),
         )
     });
-    let task_value = task.as_ref().map(|task| json!({"id":task.id,"header":task.header,"description":task.description,"state":task.state,"assignee":task.assignee,"tags":task.tags,"context_refs":task.context_refs,"revision":task.revision}));
+    let task_value = task.as_ref().map(|task| json!({"id":task.id,"type":task.task_type,"header":task.header,"description":task.description,"state":task.state,"assignee":task.assignee,"tags":task.tags,"context_refs":task.context_refs,"revision":task.revision}));
     let task_map: HashMap<String, Task> = tasks
         .iter()
         .cloned()
@@ -1498,7 +1498,7 @@ fn assemble_brief(
             })
             .cloned()
             .collect();
-        (Some(json!({"blocked":!unresolved.is_empty(),"unresolved":unresolved})), task.dependencies.iter().filter_map(|id| task_map.get(id)).map(|dependency| json!({"id":dependency.id,"header":dependency.header,"state":dependency.state,"assignee":dependency.assignee})).collect::<Vec<_>>(), json!(task.relations), json!(task.acceptance_criteria), json!(task.context))
+        (Some(json!({"blocked":!unresolved.is_empty(),"unresolved":unresolved,"blocks":crate::app::dependents_of(&task.id, tasks.iter())})), task.dependencies.iter().filter_map(|id| task_map.get(id)).map(|dependency| json!({"id":dependency.id,"header":dependency.header,"state":dependency.state,"assignee":dependency.assignee})).collect::<Vec<_>>(), json!(task.relations), json!(task.acceptance_criteria), json!(task.context))
     } else {
         (None, Vec::new(), json!([]), json!([]), json!([]))
     };
