@@ -1,137 +1,148 @@
-import { badge, button, el, emptyState, labeledField, pageHeader, selectControl, tagList } from "../dom.js";
-import { assigneeName, stateEntries, taskRecords, usersFrom } from "../model.js";
+import { avatar, button, clear, el, emptyState, pageHeader } from "../dom.js";
+import { acceptanceLabel, isTerminal, taskRecords, userFrom } from "../model.js";
 import { projectHref, taskHref } from "../router.js";
 import { statusBadge } from "./shared.js";
+
+const FILTERS = [
+  { key: "unassigned", label: "Unassigned", test: ({ task }) => !task.assignee },
+  { key: "ready", label: "Dependency-ready", test: ({ task, status }, ctx) => !status.dependency_blocked && !isTerminal(ctx.snapshot, task.state) },
+  { key: "blocked", label: "Dependency-blocked", test: ({ status }) => Boolean(status.dependency_blocked) },
+  { key: "claimable", label: "Claimable", test: ({ status }) => Boolean(status.claimable) },
+  { key: "agents", label: "Held by agents", test: ({ task }, ctx) => userFrom(ctx.snapshot, task.assignee)?.kind === "agent" },
+  { key: "open", label: "Open only", test: ({ task }, ctx) => !isTerminal(ctx.snapshot, task.state) },
+];
 
 export function renderTasks(ctx) {
   const query = ctx.route.query;
   const records = taskRecords(ctx.snapshot);
-  const states = stateEntries(ctx.snapshot);
-  const users = usersFrom(ctx.snapshot);
-  const filters = {
+  const state = {
     q: query.get("q") || "",
-    state: query.get("state") || "",
-    assignee: query.get("assignee") || "",
-    tag: query.get("tag") || "",
-    ready: query.get("ready") || "",
-    blocked: query.get("dependency_blocked") || "",
+    filter: FILTERS.some((item) => item.key === query.get("filter")) ? query.get("filter") : "",
+    offset: Math.max(0, Number.parseInt(query.get("offset") || "0", 10) || 0),
+    limit: Math.min(200, Math.max(1, Number.parseInt(query.get("limit") || "50", 10) || 50)),
+    // Exact-match filters remain addressable by URL for links and scripts.
+    exact: { state: query.get("state") || "", assignee: query.get("assignee") || "", tag: query.get("tag") || "" },
   };
-  const offset = Math.max(0, Number.parseInt(query.get("offset") || "0", 10) || 0);
-  const limit = Math.min(200, Math.max(1, Number.parseInt(query.get("limit") || "50", 10) || 50));
-  const filtered = records.filter((record) => matches(record, filters));
-  const visible = filtered.slice(offset, offset + limit);
 
-  const root = el("div", {}, pageHeader(ctx.prefix, "Tasks", "Search and filter the current project snapshot. Results refresh from the authoritative filesystem."));
-  const form = filterForm(ctx, filters, states, users, limit);
-  root.append(form);
-
+  const root = el("div", {}, pageHeader(null, "Tasks", "Search covers headers, descriptions, tags, criteria, context and references."));
   if (!records.length) {
     root.append(emptyState("No tasks yet", "Create tasks with the Tasker CLI, then refresh this view."));
     return root;
   }
-  if (!visible.length) {
-    root.append(emptyState("No tasks match these filters", "Change or clear the filters to see other project tasks.",
-      button("Clear filters", { className: "button", onclick: () => { window.location.hash = projectHref(ctx.prefix, "tasks").slice(1); } }),
-    ));
-    return root;
-  }
 
-  root.append(el("div", { className: "results-meta" },
-    el("span", { text: `Showing ${offset + 1}–${Math.min(offset + visible.length, filtered.length)} of ${filtered.length} tasks` }),
-    pagination(ctx, filters, offset, limit, filtered.length),
-  ));
-  root.append(taskTable(ctx, visible), mobileCards(ctx, visible));
+  const search = el("input", {
+    type: "search", className: "search-input", value: state.q, placeholder: "Search tasks…", "aria-label": "Search tasks",
+  });
+  const chips = FILTERS.map((filter) => el("button", {
+    type: "button", className: "filter-chip", text: filter.label, "aria-pressed": String(state.filter === filter.key),
+    onclick: () => {
+      state.filter = state.filter === filter.key ? "" : filter.key;
+      state.offset = 0;
+      update();
+    },
+  }));
+  const results = el("div", {});
+  root.append(el("div", { className: "filter-bar", role: "search" }, search, chips), results);
+
+  const update = () => {
+    chips.forEach((chip, index) => chip.setAttribute("aria-pressed", String(state.filter === FILTERS[index].key)));
+    const filtered = records.filter((record) => matches(ctx, record, state));
+    if (state.offset >= filtered.length) state.offset = 0;
+    clear(results, table(ctx, records.length, filtered, state, () => update()));
+    window.history.replaceState(null, "", hrefFor(ctx, state));
+  };
+  search.addEventListener("input", () => {
+    state.q = search.value;
+    state.offset = 0;
+    update();
+  });
+  update();
   return root;
 }
 
-function filterForm(ctx, filters, states, users, limit) {
-  const q = el("input", { type: "search", name: "q", value: filters.q, placeholder: "ID, header, description, or tag" });
-  const state = selectControl([{ value: "", label: "All states" }, ...states.map(([key, config]) => ({ value: key, label: config.label || key }))], filters.state, { name: "state" });
-  const assignee = selectControl([
-    { value: "", label: "Any assignee" }, { value: "__unassigned", label: "Unassigned" },
-    ...users.map((user) => ({ value: user.id, label: user.name ? `${user.name} (${user.id})` : user.id })),
-  ], filters.assignee, { name: "assignee" });
-  const tag = el("input", { type: "text", name: "tag", value: filters.tag, placeholder: "Exact tag" });
-  const ready = selectControl([{ value: "", label: "Any readiness" }, { value: "true", label: "Claimable" }, { value: "false", label: "Not claimable" }], filters.ready, { name: "ready" });
-  const blocked = selectControl([{ value: "", label: "Any dependency state" }, { value: "true", label: "Dependency blocked" }, { value: "false", label: "Not dependency blocked" }], filters.blocked, { name: "dependency_blocked" });
-  const form = el("form", { className: "card filter-bar", role: "search" },
-    el("div", { className: "filter-grid" },
-      el("div", { className: "search-field" }, labeledField("Search tasks", q)),
-      labeledField("State", state),
-      labeledField("Assignee", assignee),
-      labeledField("Tag", tag),
-      labeledField("Readiness", ready),
-      labeledField("Dependencies", blocked),
-      button("Apply filters", { kind: "submit", className: "button primary" }),
-    ),
-  );
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const data = new FormData(form);
-    const query = new URLSearchParams();
-    for (const key of ["q", "state", "assignee", "tag", "ready", "dependency_blocked"]) {
-      const value = String(data.get(key) || "").trim();
-      if (value) query.set(key, value);
-    }
-    query.set("limit", String(limit));
-    window.location.hash = `${projectHref(ctx.prefix, "tasks").slice(1)}?${query}`;
-  });
-  return form;
-}
-
-function matches({ task, status = {} }, filters) {
-  const haystack = [task.id, task.header, task.description, ...(task.tags || [])].join(" ").toLowerCase();
-  const terms = filters.q.toLowerCase().split(/\s+/).filter(Boolean);
+function matches(ctx, record, state) {
+  const { task } = record;
+  const haystack = [
+    task.id, task.header, task.description, ...(task.tags || []),
+    ...(task.acceptance_criteria || []).map((item) => item.text),
+    ...(task.context || []).map((item) => item.message),
+    ...(task.context_refs || []).map((item) => item.id),
+  ].join(" ").toLowerCase();
+  const terms = state.q.toLowerCase().split(/\s+/).filter(Boolean);
   if (!terms.every((term) => haystack.includes(term))) return false;
-  if (filters.state && task.state !== filters.state) return false;
-  if (filters.assignee === "__unassigned" && task.assignee) return false;
-  if (filters.assignee && filters.assignee !== "__unassigned" && task.assignee !== filters.assignee) return false;
-  if (filters.tag && !(task.tags || []).includes(filters.tag.toLowerCase())) return false;
-  if (filters.ready && Boolean(status.claimable) !== (filters.ready === "true")) return false;
-  if (filters.blocked && Boolean(status.dependency_blocked) !== (filters.blocked === "true")) return false;
+  const filter = FILTERS.find((item) => item.key === state.filter);
+  if (filter && !filter.test(record, ctx)) return false;
+  const { exact } = state;
+  if (exact.state && task.state !== exact.state) return false;
+  if (exact.assignee === "__unassigned" && task.assignee) return false;
+  if (exact.assignee && exact.assignee !== "__unassigned" && task.assignee !== exact.assignee) return false;
+  if (exact.tag && !(task.tags || []).includes(exact.tag.toLowerCase())) return false;
   return true;
 }
 
-function taskTable(ctx, records) {
-  return el("div", { className: "table-wrap task-table" },
-    el("table", {},
-      el("caption", { className: "sr-only", text: "Filtered project tasks" }),
-      el("thead", {}, el("tr", {}, ["Task", "State", "Assignee", "Tags", "Readiness"].map((title) => el("th", { scope: "col", text: title })))),
-      el("tbody", {}, records.map(({ task, status }) => el("tr", {},
-        el("td", {}, el("a", { href: taskHref(ctx.prefix, task.id), text: task.header }), el("div", { className: "identifier", text: task.id })),
-        el("td", {}, statusBadge(ctx.snapshot, task.state)),
-        el("td", { text: assigneeName(ctx.snapshot, task.assignee) }),
-        el("td", {}, tagList(task.tags) || el("span", { className: "muted", text: "—" })),
-        el("td", {}, status.dependency_blocked ? badge("Blocked", "blocked") : status.claimable ? badge("Claimable", "success") : el("span", { className: "muted", text: "—" })),
-      ))),
+function table(ctx, total, filtered, state, rerender) {
+  const visible = filtered.slice(state.offset, state.offset + state.limit);
+  const wrap = el("div", { className: "data-table" },
+    el("div", { className: "data-head", "aria-hidden": "true" },
+      ["ID", "Task", "State", "Assignee", "Criteria", "Dependencies"].map((title) => el("span", { text: title })),
     ),
+  );
+  if (!visible.length) {
+    wrap.append(el("div", { className: "data-empty" },
+      el("p", { text: "No tasks match this search." }),
+      button("Clear search and filters", { className: "button ghost", onclick: () => {
+        window.location.hash = projectHref(ctx.prefix, "tasks").slice(1);
+      } }),
+    ));
+    return wrap;
+  }
+  wrap.append(el("ul", { className: "data-body", "aria-label": "Tasks" }, visible.map((record) => el("li", {}, row(ctx, record)))));
+  const pages = Math.ceil(filtered.length / state.limit);
+  const current = Math.floor(state.offset / state.limit);
+  const pager = el("nav", { className: "pagination", "aria-label": "Task result pages" });
+  if (pages > 1) {
+    for (let page = 0; page < pages; page += 1) {
+      if (page === current) pager.append(el("span", { "aria-current": "page", text: page + 1 }));
+      else pager.append(el("a", { href: hrefFor(ctx, { ...state, offset: page * state.limit }), text: page + 1, onclick: (event) => {
+        event.preventDefault();
+        state.offset = page * state.limit;
+        rerender();
+      } }));
+    }
+  }
+  wrap.append(el("div", { className: "data-foot" },
+    el("span", { text: `Showing ${state.offset + 1}–${state.offset + visible.length} of ${filtered.length}${filtered.length !== total ? ` (${total} total)` : ""}` }),
+    pager,
+  ));
+  return wrap;
+}
+
+function row(ctx, { task, status = {} }) {
+  const user = userFrom(ctx.snapshot, task.assignee);
+  const dependencies = task.dependencies || [];
+  const unresolved = status.unresolved_dependencies || [];
+  const depLabel = !dependencies.length ? "—" : status.dependency_blocked ? `blocked · ${unresolved.join(", ")}` : "ready";
+  const depClass = !dependencies.length ? "" : status.dependency_blocked ? "bad" : "ok";
+  return el("a", { className: "data-row", href: taskHref(ctx.prefix, task.id) },
+    el("span", { className: "identifier", text: task.id }),
+    el("span", { className: "task-title" },
+      el("span", { text: task.header }),
+      (task.tags || []).slice(0, 2).map((tag) => el("span", { className: "tag", text: tag })),
+    ),
+    statusBadge(ctx.snapshot, task.state),
+    el("span", { className: `assignee ${user ? "" : "none"}`.trim() }, avatar(user, "sm"), el("span", { text: user ? user.name || user.id : "Unassigned" })),
+    el("span", { className: "ac", text: acceptanceLabel(task) }),
+    el("span", { className: `deps ${depClass}`.trim(), text: depLabel }),
   );
 }
 
-function mobileCards(ctx, records) {
-  return el("div", { className: "task-cards-mobile", "aria-label": "Filtered project tasks" }, records.map(({ task, status }) => el("a", { className: "card card-link task-card", href: taskHref(ctx.prefix, task.id) },
-    el("span", { className: "identifier", text: task.id }),
-    el("h3", { text: task.header }),
-    el("div", { className: "list-meta" }, statusBadge(ctx.snapshot, task.state), el("span", { text: assigneeName(ctx.snapshot, task.assignee) })),
-    tagList(task.tags),
-    status.dependency_blocked ? el("div", { className: "notice error", text: "Dependency blocked" }) : null,
-  )));
-}
-
-function pagination(ctx, filters, offset, limit, total) {
-  const group = el("nav", { className: "pagination", "aria-label": "Task results pages" });
-  if (offset > 0) group.append(el("a", { className: "button", href: pageHref(ctx, filters, Math.max(0, offset - limit), limit), text: "Previous" }));
-  if (offset + limit < total) group.append(el("a", { className: "button", href: pageHref(ctx, filters, offset + limit, limit), text: "Next" }));
-  return group;
-}
-
-function pageHref(ctx, filters, offset, limit) {
+function hrefFor(ctx, state) {
   const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(filters)) {
-    const apiKey = key === "blocked" ? "dependency_blocked" : key;
-    if (value) query.set(apiKey, value);
-  }
-  query.set("offset", String(offset));
-  query.set("limit", String(limit));
-  return `${projectHref(ctx.prefix, "tasks")}?${query}`;
+  if (state.q.trim()) query.set("q", state.q.trim());
+  if (state.filter) query.set("filter", state.filter);
+  for (const [key, value] of Object.entries(state.exact)) if (value) query.set(key, value);
+  if (state.offset) query.set("offset", String(state.offset));
+  if (state.limit !== 50) query.set("limit", String(state.limit));
+  const suffix = query.toString();
+  return `${projectHref(ctx.prefix, "tasks")}${suffix ? `?${suffix}` : ""}`;
 }
