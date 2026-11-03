@@ -251,10 +251,21 @@ function remember(e: { tool: string }, text: string | undefined): Seen | undefin
   if (isCli && !/\btasker(?:\.exe)?\b/.test(command)) return undefined
   if (!isCli && !/tasker/i.test(e.tool)) return undefined
 
-  const project = (isCli ? /(?:-p|--project)[\s=]+([A-Z][A-Z0-9]{1,9})\b/.exec(command)?.[1] : /"project":"([A-Z][A-Z0-9]{1,9})"/.exec(input)?.[1]) ?? undefined
-  const focuses = isCli ? FOCUS_VERBS.test(command) : FOCUS_TOOLS.test(e.tool)
+  const fromOutput = () => ids(/"id":"[^"]+"/.exec(text ?? '')?.[0] ?? '')[0]
+  if (!isCli) {
+    const project = /"project":"([A-Z][A-Z0-9]{1,9})"/.exec(input)?.[1]
+    const task = FOCUS_TOOLS.test(e.tool) ? (ids(input)[0] ?? fromOutput()) : undefined
+    return { project: project ?? prefixOf(task), task }
+  }
+
+  // A chained line (`a && b; c`) is read in order: the last tasker command that names something wins.
+  let project: string | undefined
   let task: string | undefined
-  if (focuses) task = ids(isCli ? command : input)[0] ?? ids(/"id":"[^"]+"/.exec(text ?? '')?.[0] ?? '')[0]
+  for (const part of command.split(/&&|\|\||;|\n|\|/)) {
+    if (!/\btasker(?:\.exe)?\b/.test(part)) continue
+    project = /(?:-p|--project)[\s=]+([A-Z][A-Z0-9]{1,9})\b/.exec(part)?.[1] ?? project
+    if (FOCUS_VERBS.test(part)) task = ids(part)[0] ?? fromOutput() ?? task
+  }
 
   return { project: project ?? prefixOf(task), task }
 }
@@ -322,11 +333,15 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'mcp__tasker-panel__focus' }, async ($, e) => {
     const input = e as unknown as Pin
+    // The agent names what it works on; later tasker calls keep moving the focus.
     await update($, pin, current => ({
       root: input.root || current.root,
       bin: input.bin || current.bin,
-      project: input.project?.toUpperCase() || undefined,
-      task: input.task?.toUpperCase() || undefined,
+    }))
+    const task = input.task?.toUpperCase() || undefined
+    await update($, seen, current => ({
+      project: input.project?.toUpperCase() || prefixOf(task) || current.project,
+      task: task ?? current.task,
     }))
     await refresh($)
     const { isPlaced } = await $.ui.open({ id: PANE, title: TITLE })
