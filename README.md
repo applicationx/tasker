@@ -28,13 +28,146 @@ cargo install --path . --locked
 
 Tasker uses Rust 2024. `Cargo.lock` is committed because this is an application.
 
+### Install from AppX Nexus
+
+Released versions are published to the private Nexus cargo registry. Nexus requires authentication for both reading and publishing. One-time machine setup, adding the registries to the user cargo config (`~/.cargo/config.toml`, or `%USERPROFILE%\.cargo\config.toml` on Windows; merge with an existing file). Pick the credential provider for your OS: `cargo:wincred` on Windows, `cargo:macos-keychain` on macOS, `cargo:libsecret` on a Linux desktop. Defining the registries here, not only in this repository, lets `cargo login` and `cargo install` run from any directory:
+
+```toml
+[registry]
+global-credential-providers = ["cargo:wincred", "cargo:token"]
+
+[registries.appx]
+index = "sparse+https://nexus.appx-labs.com/repository/cargo-group/"
+
+[registries.appx-hosted]
+index = "sparse+https://nexus.appx-labs.com/repository/cargo-hosted/"
+```
+
+When writing the file from Windows PowerShell 5.1, use `Set-Content -Encoding Ascii`; that version has no `utf8NoBOM` encoding.
+
+Store the Nexus token once per registry. Nexus expects HTTP Basic credentials, and the token comes from the `nexus - appx` item in the 1Password `programming` vault. macOS and Linux (bash/zsh):
+
+```sh
+TOKEN="Basic $(printf '%s:%s' "$(op read 'op://programming/nexus - appx/username')" "$(op read 'op://programming/nexus - appx/password')" | base64 | tr -d '\n')"
+printf '%s\n' "$TOKEN" | cargo login --registry appx
+printf '%s\n' "$TOKEN" | cargo login --registry appx-hosted
+unset TOKEN
+```
+
+Windows PowerShell:
+
+```powershell
+$u = op read 'op://programming/nexus - appx/username'; $p = op read 'op://programming/nexus - appx/password'; $t = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${u}:${p}")); $t | cargo login --registry appx; $t | cargo login --registry appx-hosted; Remove-Variable u,p,t
+```
+
+Headless Linux and CI without a keyring: use `cargo:token` and set `CARGO_REGISTRIES_APPX_TOKEN` / `CARGO_REGISTRIES_APPX_HOSTED_TOKEN` to the `Basic ...` value from a secret store instead of running `cargo login`.
+
+Then check, install, or upgrade. Nexus has no search API, so `cargo search` returns 404; use `cargo info` instead:
+
+```sh
+cargo info tasker --registry appx
+cargo install tasker --registry appx --locked
+```
+
+To publish a release from a clean checkout, bump `version` in `Cargo.toml` and run `mise run publish`. That runs `mise run check`, then `cargo publish --locked --registry appx-hosted`. `mise run package` builds the exact crate without uploading it.
+
+## Set up an agent to run your planning (copy-paste prompt)
+
+Paste this into Claude Code or Codex from inside the repository, or from any folder for a home-board project. Edit the three lines at the top first. The agent installs what is missing, wires up the skill and MCP server, and creates a project where tasks replace Jira issues, and `PROJECT.md`, resources, and decisions replace Confluence pages.
+
+```text
+Set up Tasker as the planning and tracking system for this work, replacing Jira and Confluence.
+
+Project name: <My App>
+Prefix: <APP>            (2-10 uppercase letters/digits)
+Board: <repo | home>     (repo = .tasker committed with this repository; home = ~/tasker, outside any repo)
+
+Steps:
+1. Make sure `tasker --version` works. If not, install it with
+   `cargo install tasker --registry appx --locked` (the appx-nexus-cargo skill covers Nexus login),
+   or `cargo install --git https://github.com/applicationx/tasker --locked`.
+2. Install the version-matched skill for yourself: `tasker skill install --agent claude`
+   (Codex: `--agent codex`). Add `--repo` when the board is repo, so the skill is committed with the code.
+   Then read it with `tasker skill show`.
+3. Register the MCP server unless it is already listed:
+   Claude Code: `claude mcp add tasker -- tasker mcp`
+   Codex: add `[mcp_servers.tasker]` with `command = "tasker"`, `args = ["mcp"]` to ~/.codex/config.toml.
+   Claude Code only: also install the live board panel with
+   `claude plugin install tasker-panel --marketplace applicationx/tasker`.
+4. Create the board and project:
+   repo: `tasker init --name "<My App>" --prefix <APP>`
+   home: `tasker --root ~/tasker create project "<My App>" --prefix <APP>`
+   Confirm with `tasker list -o json` and `tasker config show -o json`.
+5. Map Jira concepts onto task types. Keep the defaults (task, story, bug, question, test_case) and add
+   `tasker type add epic -p <APP> --label Epic --description "Large body of work split into stories"`.
+   In the project's tasker.yaml, restrict `subtask_of` with `source_types: [story, task, bug, test_case]`
+   and `target_types: [epic, story]`, then run `tasker validate -p <APP> -o json`.
+   Use `--parent` for hierarchy, `--blocked-by`/`--blocks` for blockers, and `question` tasks that block
+   the work needing the answer.
+6. Replace Confluence: fill PROJECT.md (purpose, goals, non-goals, constraints, architecture, direction,
+   open questions) from what you can learn from this repository and from me, using
+   `tasker project brief set -p <APP> --file <draft.md>`. Register existing docs as referenced resources
+   (`tasker create resource "<title>" -p <APP> --kind design --path docs/<file>.md`) and record
+   architecture choices as decisions (`tasker create decision "<title>" -p <APP> --file <adr.md>`).
+7. Add a short "Planning with Tasker" section to AGENTS.md (and CLAUDE.md if present) that says:
+   work is tracked in Tasker project <APP>; start with `tasker next --as <agent> -p <APP>` or
+   `tasker claim`; read `tasker brief <ID> -o markdown` before coding; record progress and decisions
+   with `tasker context add`; tick `tasker acceptance check`; finish with `tasker transition <ID> done`;
+   create follow-ups instead of leaving TODOs; never use Jira or Confluence for this project.
+8. Ask me for the first epic or the current backlog, then create epics, stories with acceptance
+   criteria, and blockers. Finish by showing `tasker list tasks -p <APP>` and `tasker validate -p <APP>`.
+
+Do not invent requirements; put unknowns in PROJECT.md "Open questions" or as question tasks.
+```
+
+After setup, a short message such as "pick up the next APP task" is enough, because the skill and the `AGENTS.md` section carry the workflow.
+
 ## Project root configuration
 
 Tasker discovers project folders directly below `projects_root`. The root is selected in this order:
 
-1. `TASKER_ROOT`
-2. the global configuration file in the OS-specific application config directory
-3. `~/tasker`
+1. the global `--root PATH` flag (one command), or `tasker mcp --root PATH`
+2. `TASKER_ROOT`
+3. the nearest `.tasker` folder at or above the current directory (a real directory, not a symlink; the home directory's own `.tasker` is ignored)
+4. the global configuration file in the OS-specific application config directory (`projects_root`)
+5. `~/tasker`
+
+`tasker config show` reports which one applied as `root_source` (`flag`, `env`, `workspace`, `config`, or `default`). Entries 4 and 5 form the *home board*: the place for projects you do not want inside a code repository. A `.tasker` board is optional.
+
+```sh
+# Inside a repository that has .tasker, put a project on the home board instead:
+tasker --root ~/tasker create project "Side Notes" --prefix NOTE
+# ...and keep using it from the repository by prefix:
+tasker create task "Write up findings" -p NOTE
+```
+
+When a project selector (`-p NOTE`, or the prefix of a task ID such as `NOTE-4`) is not found in the effective root, Tasker looks in the home board and then in registered boards. The first tier with a match wins; two matches in one tier fail with `project_ambiguous` and list the candidates. Setting `TASKER_ROOT` disables this lookup, so it stays an isolation switch.
+
+### Boards committed with the code
+
+A `.tasker` folder lets each repository keep its task board next to its source, so task state travels across machines and through commits, branches, and reviews like normal code:
+
+```sh
+cd ~/work/app
+tasker init --name "App" --prefix APP   # creates ~/work/app/.tasker at the Git top level
+git add .tasker && git commit -m "Add Tasker board"
+```
+
+`tasker init` creates `.tasker/` at the nearest ancestor containing `.git` (or the current directory, or `--path`), writes a `.tasker/.gitignore` that excludes only the transient `.tasker-root.lock` and `.tasker-transactions/`, registers the board, and optionally creates the first project. Repeating it is a no-op. A plain Git repository never selects a root by itself, so repositories without a board keep using the global root. To move an older repository-local `tasker/` folder, run `git mv tasker .tasker`.
+
+### Listing every board
+
+Every board created by `tasker init`, or by `create project` inside a `.tasker` folder, is remembered in `registry.toml` in the configuration directory. The registry is only a list of paths: project files remain authoritative and missing entries are reported as warnings, never errors.
+
+```sh
+tasker list -o json            # current root first, then every registered board
+tasker list --stats -o json    # include task counts by state
+tasker root list -o json
+tasker root add ~/work/other/.tasker
+tasker root remove ~/work/retired/.tasker
+```
+
+`tasker list` also shows the home board when it exists and differs from the current root. `tasker list projects` still lists only the effective root.
 
 ```sh
 tasker config show
@@ -42,7 +175,96 @@ tasker config get projects-root
 tasker config set projects-root ~/Development/tasker-projects
 ```
 
-`~` is expanded. Other overrides are `TASKER_PROJECT`, `TASKER_ACTOR`, and `TASKER_OUTPUT`. Do not run `config set` merely to develop Tasker; tests use isolated `TASKER_ROOT` directories.
+`~` is expanded. Other overrides are `TASKER_PROJECT`, `TASKER_ACTOR`, `TASKER_OUTPUT`, and `TASKER_CONFIG_DIR` (the directory holding `config.toml` and `registry.toml`). Do not run `config set` merely to develop Tasker; tests use isolated `TASKER_ROOT` and `TASKER_CONFIG_DIR` directories.
+
+## MCP server
+
+`tasker mcp` serves Tasker to Model Context Protocol clients over stdio. The client launches it and it exits when the client closes stdin. It opens no socket and keeps no state; every tool call runs the normal CLI code path, resolving the root afresh, so a `.tasker` board in the client's working directory is the default.
+
+Claude Code:
+
+```sh
+claude mcp add tasker -- tasker mcp
+# Pin a root instead of using workspace discovery:
+claude mcp add tasker -- tasker mcp --root ~/work/app/.tasker
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.tasker]
+command = "tasker"
+args = ["mcp"]
+```
+
+Cursor (`.cursor/mcp.json` in the repository; `${workspaceFolder}` pins the repository board even if Cursor starts the server elsewhere):
+
+```json
+{ "mcpServers": { "tasker": { "command": "tasker", "args": ["mcp", "--root", "${workspaceFolder}/.tasker"] } } }
+```
+
+Tools cover the agent loop: `tasker_list_boards`, `tasker_list_tasks`, `tasker_get_task`, `tasker_status`, `tasker_next`, `tasker_claim`, `tasker_create_task` (with `type`, `blocked_by`, `blocks`, `parent`), `tasker_update_task`, `tasker_transition`, `tasker_acceptance`, `tasker_context_add`, `tasker_dependency`, `tasker_relation`, `tasker_task_types`, `tasker_search`, `tasker_brief`, `tasker_validate`, `tasker_changelog`, and `tasker_init`. Every tool accepts an optional `root` that selects a board for that call only. `tasker_cli` runs any other command from an argument array. Failures come back with `isError: true` and the same structured error JSON as the CLI. Stdin belongs to the protocol, so commands that would read stdin fail; use `--file` or `--content` through `tasker_cli` instead.
+
+## Agent skill
+
+The binary embeds a `tasker` skill (`skills/tasker/SKILL.md`) that teaches agents the current CLI, board locations, blocking, and task types. Install it for the agent you use; it always matches the installed Tasker version:
+
+```sh
+tasker skill show                         # print it
+tasker skill install --agent claude       # ~/.claude/skills/tasker/SKILL.md
+tasker skill install --agent codex        # ~/.agents/skills/tasker/SKILL.md
+tasker skill install --agent cursor       # ~/.cursor/skills/tasker/SKILL.md
+tasker skill install --agent claude --repo   # .claude/skills/tasker/SKILL.md in this repository
+```
+
+With `--repo` the skill goes under the Git top level (`.claude/skills`, `.agents/skills`, or `.cursor/skills`) so it is committed with the code. An existing different file is kept unless you pass `--force`. Agents can use the CLI with the skill, the MCP server, or both.
+
+## Live board in Claude Code
+
+`claude-plugins/tasker-panel` is a Claude Code mod that keeps a Tasker panel beside the chat while an agent works. It shows:
+
+- the task the agent is on: header, type, state, assignee, an acceptance-criteria progress bar with each criterion ticked or open, `blocked_by` blockers with their states, what it `blocks`, and the latest four context entries;
+- the project board grouped by workflow state, in workflow order with terminal states last. Dependency-blocked tasks are marked ⛔. Click a task to follow it; **follow agent** goes back to automatic focus;
+- a status-line summary such as `DEMO-1 In Progress · AC 1/2 · blocked by 1`, which is also the fallback in a plain terminal session where no pane is docked.
+
+Install it from this repository's marketplace. At a Claude Code terminal prompt:
+
+```text
+/plugin install tasker-panel --marketplace applicationx/tasker
+```
+
+From a shell:
+
+```sh
+claude plugin install tasker-panel --marketplace applicationx/tasker
+```
+
+In the desktop app, click **+** next to the prompt box, then **Plugins** → **Add marketplace** with `applicationx/tasker`, then **Add plugin**. To run it straight from a checkout, start Claude Code with `claude --plugin-dir claude-plugins/tasker-panel`, or list that folder in `CLAUDE_CODE_PLUGIN_DIRS`.
+
+The panel opens by itself in the desktop app and in VS Code when the session's folder resolves a Tasker board. In a terminal session it only updates the status line until you run `/tasker-panel`.
+
+```text
+/tasker-panel                    open the panel
+/tasker-panel APP-12             follow a task (or APP to follow a project)
+/tasker-panel auto               follow the agent again
+/tasker-panel --root ~/tasker    read a board the session's folder does not discover
+/tasker-panel --bin /path/to/tasker   use a tasker other than the one on PATH
+```
+
+Agents can also call the `mcp__tasker-panel__focus` tool, with optional `task`, `project`, `root`, and `bin` fields, to open the panel on the task they just claimed.
+
+How it picks what to show: a pinned task or project comes first. Next comes the latest `tasker claim`, `transition`, `acceptance`, `context`, `brief`, `status`, or `get task` the agent ran, through Bash, PowerShell, or a `mcp__tasker__*` tool. After that it uses the task in the workflow's `claim_state` assigned to `TASKER_ACTOR`, then any task in `claim_state`. The project is the pinned or last-used prefix, then `TASKER_PROJECT`, then the first project in the effective root.
+
+The mod keeps Tasker's invariants. It only runs the one-shot CLI (`tasker list projects`, `get project`, `list tasks`, `get task`, and `status`, all with `-o json`) from the session's working directory. It does this after each tasker tool call and whenever a file in the project's `tasks/` folder changes. It checks for changes by listing that folder every two seconds, so manual edits and Git checkouts show up too. It starts no process that outlives a command, opens no socket, and keeps no index. What it remembers is only the current drawing and the pin, held by Claude Code for the session.
+
+Other ways to see progress, and why the panel is the default:
+
+| Option | Live | Cost | Notes |
+| --- | --- | --- | --- |
+| `tasker-panel` mod (recommended) | Yes: refreshes on tool calls and file changes | None to the conversation | Claude Code 2.1.275 or later. It is a pane in the desktop app and VS Code, and the status line in a terminal. |
+| Inline visualization from the skill (`show_widget`) | No: a snapshot each time the agent draws it | Tokens on every redraw | Fine for an occasional summary in chat. It goes stale as soon as work moves on. |
+| MCP Apps UI resource from `tasker mcp` | Only when a tool returns it | Would need an HTML UI in the binary | Shows inline with one tool result rather than staying beside the chat. Client support varies. |
+| `tasker ui start --open` | Yes | A loopback child process you start yourself | The full board in a browser, outside the chat. |
 
 ## Quickstart
 
@@ -125,7 +347,7 @@ Ensure Cargo's binary directory (normally `~/.cargo/bin`) is on `PATH`, then rer
 Configuration precedence is:
 
 ```text
-TASKER_ROOT -> global projects-root -> ~/tasker
+--root -> TASKER_ROOT -> .tasker folder at/above the current directory -> global projects-root -> ~/tasker
 TASKER_OUTPUT -> global default-output -> human
 ```
 
@@ -415,7 +637,7 @@ Each project has a human-editable `tasker.yaml`. Its workflow defines:
 
 The default states are `backlog`, `ready`, `in_progress`, `blocked`, `done`, and `cancelled`. Tasker never bypasses configured transitions. Edit YAML to customize the workflow, then run `tasker validate -p APP`.
 
-Task content updates are deliberately restricted to `header`, `description`, and `tags`. The description states what should be done. Measurable completion checkpoints are managed through dedicated `acceptance` commands, while append-only agent reports and decisions use `context`. Use dedicated `assign`, `unassign`, `transition`, `dependency`, and `relation` commands for other protected domain fields. Mutating task commands support `--if-revision N` for optimistic concurrency.
+Task content updates are deliberately restricted to `header`, `description`, `tags`, and `type`. The description states what should be done. Measurable completion checkpoints are managed through dedicated `acceptance` commands, while append-only agent reports and decisions use `context`. Use dedicated `assign`, `unassign`, `transition`, `dependency`, and `relation` commands for other protected domain fields. Mutating task commands support `--if-revision N` for optimistic concurrency.
 
 ## Users, assignment, and actors
 
@@ -433,18 +655,47 @@ tasker unassign APP-1
 
 Names are case-insensitively unique. `ensure user` is idempotent. Assignment and claims automatically create unknown users. Mutation actors resolve from `--actor`, `TASKER_ACTOR`, command-specific `--as`, then the OS username.
 
-## Dependencies and readiness
+## Task types
+
+Every task has a `type`. Types are configured per project in `tasker.yaml`; new projects get `task` (the default), `story`, `bug`, `question`, and `test_case`:
+
+```yaml
+default_task_type: task
+task_types:
+  question:
+    label: Question
+    description: An open question; make it block the tasks that need the answer
+  test_case:
+    label: Test case
+```
 
 ```sh
-tasker dependency add APP-2 APP-1       # APP-2 depends on APP-1
+tasker type list -p APP -o json
+tasker type add spike -p APP --label "Spike" --description "Time-boxed investigation"
+tasker create task "Which cache?" -p APP --type question --blocks APP-12
+tasker update task APP-7 --type story
+tasker list tasks -p APP --type question --type bug -o json
+```
+
+Projects created before task types have the single implicit type `task`, and task files without `type` read as `task`. Remove or rename a type by editing `tasker.yaml`; `tasker validate` reports tasks whose type no longer exists.
+
+## Dependencies: blocked_by and blocks
+
+```sh
+tasker dependency add APP-2 APP-1       # APP-2 blocked_by APP-1 (APP-1 blocks APP-2)
+tasker relation add APP-2 blocked_by APP-1   # same edge
+tasker relation add APP-1 blocks APP-2       # same edge, written from the blocker
+tasker create task "Decide API" -p APP --type question --blocks APP-2
+tasker create task "Ship it" -p APP --blocked-by APP-1 --blocked-by APP-2
 tasker dependency list APP-2
 tasker dependency list APP-2 --recursive
-tasker dependency list APP-1 --reverse
+tasker dependency list APP-1 --reverse  # what APP-1 blocks
 tasker dependency check APP-2 -o json
+tasker status APP-2 -o json             # blocked_by with states, blocks
 tasker dependency remove APP-2 APP-1
 ```
 
-A dependency is satisfied only when its target state has `dependency_satisfied: true` (by default, `done` does and `cancelled` does not). Dependency blocking is derived and does not rewrite workflow state. Self-dependencies and direct or transitive cycles are rejected atomically.
+A dependency is stored once, on the blocked task. It is satisfied only when its target state has `dependency_satisfied: true` (by default, `done` does and `cancelled` does not). While any blocker is unsatisfied, the task cannot be claimed, transitioned into `claim_state`, or transitioned into a dependency-satisfying state; those attempts fail with `dependencies_unsatisfied`. Other transitions, such as to `blocked` or `cancelled`, stay available. Self-dependencies and direct or transitive cycles are rejected atomically, including for `create task --blocked-by/--blocks`.
 
 ## Acceptance criteria and task context
 
@@ -483,7 +734,21 @@ tasker relation list APP-2 --direction incoming
 tasker relation remove APP-3 relates_to APP-1
 ```
 
-`subtask_of` is acyclic and derives the inverse label `parent_of`; `relates_to` is symmetric. Relation types, inverse labels, symmetry, and acyclicity are configured in `tasker.yaml`. Inverses are derived rather than duplicated into a second task file.
+`subtask_of` is acyclic and derives the inverse label `parent_of`; `relates_to` is symmetric. Relation types, inverse labels, symmetry, and acyclicity are configured in `tasker.yaml`. Inverses are derived rather than duplicated into a second task file. `create task --parent APP-2` adds `subtask_of` at creation.
+
+A relation type can restrict the task types it connects. An empty or missing list allows any type:
+
+```yaml
+relations:
+  subtask_of:
+    inverse_label: parent_of
+    symmetric: false
+    acyclic: true
+    source_types: [test_case, task]
+    target_types: [story]
+```
+
+Violations fail with `relation_type_mismatch`, including when `update task --type` would break an existing relation. `blocked_by` and `blocks` are reserved for dependencies and cannot be configured as relation types; `relation list` shows them as derived rows.
 
 ## Agent claiming
 

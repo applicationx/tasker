@@ -11,6 +11,52 @@ pub struct ProjectConfig {
     pub prefix: String,
     pub workflow: Workflow,
     pub relations: BTreeMap<String, RelationType>,
+    /// Configured task types; an empty map means the single implicit type `task`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub task_types: BTreeMap<String, TaskTypeConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_task_type: Option<String>,
+}
+impl ProjectConfig {
+    /// Task types in effect, including the implicit `task` type of legacy projects.
+    pub fn effective_task_types(&self) -> BTreeMap<String, TaskTypeConfig> {
+        if self.task_types.is_empty() {
+            BTreeMap::from([(
+                DEFAULT_TASK_TYPE.to_string(),
+                TaskTypeConfig {
+                    label: "Task".into(),
+                    description: String::new(),
+                },
+            )])
+        } else {
+            self.task_types.clone()
+        }
+    }
+    pub fn default_type(&self) -> String {
+        self.default_task_type
+            .clone()
+            .unwrap_or_else(default_task_type)
+    }
+    pub fn has_task_type(&self, name: &str) -> bool {
+        if self.task_types.is_empty() {
+            name == DEFAULT_TASK_TYPE
+        } else {
+            self.task_types.contains_key(name)
+        }
+    }
+}
+pub const DEFAULT_TASK_TYPE: &str = "task";
+pub fn default_task_type() -> String {
+    DEFAULT_TASK_TYPE.to_string()
+}
+/// Relation names reserved for the dependency graph (`blocked_by`/`blocks`).
+pub const RESERVED_RELATIONS: [&str; 2] = ["blocked_by", "blocks"];
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTypeConfig {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +79,12 @@ pub struct RelationType {
     pub inverse_label: String,
     pub symmetric: bool,
     pub acyclic: bool,
+    /// Task types allowed as the relation source; empty allows any type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_types: Vec<String>,
+    /// Task types allowed as the relation target; empty allows any type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_types: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,6 +174,8 @@ pub struct ContextReference {
 pub struct Task {
     pub schema_version: u32,
     pub id: String,
+    #[serde(rename = "type", default = "default_task_type")]
+    pub task_type: String,
     pub header: String,
     pub description: String,
     #[serde(default)]
@@ -250,6 +304,8 @@ pub struct ProjectSummary {
 #[derive(Debug, Serialize)]
 pub struct TaskSummary {
     pub id: String,
+    #[serde(rename = "type")]
+    pub task_type: String,
     pub header: String,
     pub state: String,
     pub assignee: Option<String>,
@@ -267,8 +323,19 @@ pub struct StatusView {
     pub acceptance_criteria_remaining: Vec<String>,
     pub dependency_blocked: bool,
     pub unresolved_dependencies: Vec<String>,
+    /// Direct prerequisites (stored `dependencies`) with their current state.
+    pub blocked_by: Vec<BlockerView>,
+    /// Tasks that directly depend on this task.
+    pub blocks: Vec<String>,
     pub allowed_transitions: Vec<String>,
     pub claimable: bool,
+}
+#[derive(Debug, Serialize)]
+pub struct BlockerView {
+    pub id: String,
+    pub header: String,
+    pub state: String,
+    pub satisfied: bool,
 }
 #[derive(Debug, Serialize)]
 pub struct RelationView {
@@ -325,6 +392,8 @@ pub fn default_project(name: String, prefix: String) -> ProjectConfig {
             inverse_label: "parent_of".into(),
             symmetric: false,
             acyclic: true,
+            source_types: vec![],
+            target_types: vec![],
         },
     );
     relations.insert(
@@ -333,8 +402,34 @@ pub fn default_project(name: String, prefix: String) -> ProjectConfig {
             inverse_label: "relates_to".into(),
             symmetric: true,
             acyclic: false,
+            source_types: vec![],
+            target_types: vec![],
         },
     );
+    let mut task_types = BTreeMap::new();
+    for (name, label, description) in [
+        ("task", "Task", "A unit of implementation work"),
+        ("story", "Story", "A user-facing outcome that groups tasks"),
+        ("bug", "Bug", "A defect to fix"),
+        (
+            "question",
+            "Question",
+            "An open question; make it block the tasks that need the answer",
+        ),
+        (
+            "test_case",
+            "Test case",
+            "A verification scenario, usually a subtask of a story",
+        ),
+    ] {
+        task_types.insert(
+            name.into(),
+            TaskTypeConfig {
+                label: label.into(),
+                description: description.into(),
+            },
+        );
+    }
     ProjectConfig {
         schema_version: SCHEMA_VERSION,
         name,
@@ -346,6 +441,8 @@ pub fn default_project(name: String, prefix: String) -> ProjectConfig {
             transitions,
         },
         relations,
+        task_types,
+        default_task_type: Some(DEFAULT_TASK_TYPE.into()),
     }
 }
 pub fn task_id_cmp(a: &str, b: &str) -> std::cmp::Ordering {
@@ -367,6 +464,7 @@ mod tests {
         let mut t = Task {
             schema_version: 1,
             id: "DEM-3".into(),
+            task_type: "task".into(),
             header: "x".into(),
             description: "".into(),
             acceptance_criteria: vec![],
@@ -405,6 +503,21 @@ mod tests {
         )
         .unwrap();
         assert!(task.context_refs.is_empty());
+        assert_eq!(task.task_type, "task");
+    }
+
+    #[test]
+    fn legacy_project_config_has_implicit_task_type() {
+        let mut p = default_project("Demo".into(), "DEM".into());
+        p.task_types.clear();
+        p.default_task_type = None;
+        let yaml = serde_yaml_ng::to_string(&p).unwrap();
+        assert!(!yaml.contains("task_types"));
+        assert!(!yaml.contains("source_types"));
+        let d: ProjectConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert!(d.has_task_type("task"));
+        assert!(!d.has_task_type("story"));
+        assert_eq!(d.default_type(), "task");
     }
 
     #[test]
@@ -413,5 +526,7 @@ mod tests {
         let d: ProjectConfig =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&p).unwrap()).unwrap();
         assert_eq!(d.prefix, "DEM");
+        assert_eq!(d.task_types["question"].label, "Question");
+        assert!(d.has_task_type("test_case"));
     }
 }

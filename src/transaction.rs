@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 const TRANSACTION_DIR: &str = ".tasker-transactions";
 const TRANSACTION_ACTIONS: &[&str] = &[
+    "task.created",
     "resource.created",
     "decision.created",
     "decision.superseded",

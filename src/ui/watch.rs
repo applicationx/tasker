@@ -1,16 +1,21 @@
 use crate::error::{AppError, ErrorCategory, Result};
 use notify_debouncer_mini::notify::{
-    Config as NotifyConfig, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher,
-};
-use notify_debouncer_mini::{
-    Config, DebounceEventResult, Debouncer, new_debouncer, new_debouncer_opt,
+    self, Config as NotifyConfig, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode,
+    Watcher,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// Quiet period that closes a batch of filesystem changes.
+const DEBOUNCE: Duration = Duration::from_millis(250);
+/// Upper bound on how long a continuously changing batch is held back.
+const MAX_BATCH_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChangeHint {
@@ -82,13 +87,11 @@ impl ChangeSignal {
     }
 }
 
+/// Owns the watcher; dropping it drops the event sender, which ends the
+/// debounce thread.
 pub enum WatchGuard {
-    Native {
-        _watcher: Debouncer<RecommendedWatcher>,
-    },
-    Poll {
-        _watcher: Debouncer<PollWatcher>,
-    },
+    Native { _watcher: RecommendedWatcher },
+    Poll { _watcher: PollWatcher },
 }
 
 impl WatchGuard {
@@ -105,23 +108,77 @@ pub fn start(
     changes: Arc<ChangeSignal>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(WatchGuard, Vec<String>)> {
-    let root_path = root.to_path_buf();
-    let native_changes = Arc::clone(&changes);
-    let native_shutdown = Arc::clone(&shutdown);
-    let handler = move |result: DebounceEventResult| {
-        handle_events(result, &root_path, &native_changes, &native_shutdown);
-    };
-    match new_debouncer(Duration::from_millis(250), handler) {
-        Ok(mut debouncer) => match register(debouncer.watcher(), root) {
-            Ok(()) => Ok((
-                WatchGuard::Native {
-                    _watcher: debouncer,
-                },
-                Vec::new(),
-            )),
+    let events = spawn_debouncer(root, Arc::clone(&changes), Arc::clone(&shutdown))?;
+    match RecommendedWatcher::new(events, NotifyConfig::default()) {
+        Ok(mut watcher) => match register(&mut watcher, root) {
+            Ok(()) => Ok((WatchGuard::Native { _watcher: watcher }, Vec::new())),
             Err(native_error) => poll_fallback(root, native_error, changes, shutdown),
         },
         Err(error) => poll_fallback(root, error.to_string(), changes, shutdown),
+    }
+}
+
+fn spawn_debouncer(
+    root: &Path,
+    changes: Arc<ChangeSignal>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<Sender<notify::Result<Event>>> {
+    let (sender, receiver) = mpsc::channel();
+    let root = root.to_path_buf();
+    thread::Builder::new()
+        .name("tasker-ui-watch".to_string())
+        .spawn(move || debounce(receiver, &root, &changes, &shutdown))
+        .map_err(|error| {
+            AppError::new(
+                "ui_start_failed",
+                format!("Cannot start filesystem watcher thread: {error}"),
+                ErrorCategory::Io,
+            )
+        })?;
+    Ok(sender)
+}
+
+/// Batches changed paths until DEBOUNCE passes without a further change (or
+/// MAX_BATCH_DELAY elapses). Access events are dropped before batching:
+/// inotify reports every open/read, so serving the UI, or loading a project
+/// to name a change, would otherwise keep signalling changes forever.
+fn debounce(
+    receiver: Receiver<notify::Result<Event>>,
+    root: &Path,
+    changes: &ChangeSignal,
+    shutdown: &AtomicBool,
+) {
+    let mut pending = BTreeSet::<PathBuf>::new();
+    let mut first = Instant::now();
+    let mut last = first;
+    loop {
+        let received = if pending.is_empty() {
+            receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            let deadline = (last + DEBOUNCE).min(first + MAX_BATCH_DELAY);
+            receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        };
+        match received {
+            Ok(Ok(event)) if matches!(event.kind, EventKind::Access(_)) => {}
+            Ok(Ok(event)) => {
+                let now = Instant::now();
+                if pending.is_empty() {
+                    first = now;
+                }
+                last = now;
+                pending.extend(event.paths);
+            }
+            Ok(Err(_)) => changes.notify(None, "watcher_error"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        let now = Instant::now();
+        if !pending.is_empty() && (now >= last + DEBOUNCE || now >= first + MAX_BATCH_DELAY) {
+            let batch = std::mem::take(&mut pending);
+            if !handle_paths(batch, root, changes, shutdown) {
+                return;
+            }
+        }
     }
 }
 
@@ -131,21 +188,16 @@ fn poll_fallback(
     changes: Arc<ChangeSignal>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(WatchGuard, Vec<String>)> {
-    let root_path = root.to_path_buf();
-    let config = Config::default()
-        .with_timeout(Duration::from_millis(250))
-        .with_notify_config(NotifyConfig::default().with_poll_interval(Duration::from_secs(5)));
-    let mut debouncer = new_debouncer_opt::<_, PollWatcher>(config, move |result| {
-        handle_events(result, &root_path, &changes, &shutdown);
-    })
-    .map_err(|error| {
+    let events = spawn_debouncer(root, changes, shutdown)?;
+    let config = NotifyConfig::default().with_poll_interval(Duration::from_secs(5));
+    let mut watcher = PollWatcher::new(events, config).map_err(|error| {
         AppError::new(
             "ui_start_failed",
             format!("Cannot initialize native or polling filesystem watcher: {error}"),
             ErrorCategory::Io,
         )
     })?;
-    register(debouncer.watcher(), root).map_err(|error| {
+    register(&mut watcher, root).map_err(|error| {
         AppError::new(
             "ui_start_failed",
             format!("Cannot register polling filesystem watcher: {error}"),
@@ -153,9 +205,7 @@ fn poll_fallback(
         )
     })?;
     Ok((
-        WatchGuard::Poll {
-            _watcher: debouncer,
-        },
+        WatchGuard::Poll { _watcher: watcher },
         vec![format!(
             "Native filesystem watcher unavailable; using low-frequency polling: {native_error}"
         )],
@@ -168,38 +218,35 @@ fn register(watcher: &mut dyn Watcher, root: &Path) -> std::result::Result<(), S
         .map_err(|error| format!("{}: {error}", root.display()))
 }
 
-fn handle_events(
-    result: DebounceEventResult,
+/// Signals one change for a batch of paths. Returns false once the root is
+/// gone, which shuts the UI down.
+fn handle_paths(
+    paths: BTreeSet<PathBuf>,
     root: &Path,
     changes: &ChangeSignal,
     shutdown: &AtomicBool,
-) {
+) -> bool {
     if !root.is_dir() {
         shutdown.store(true, Ordering::Release);
         changes.wake_all();
-        return;
+        return false;
     }
-    match result {
-        Ok(events) => {
-            let mut relevant = events
-                .into_iter()
-                .filter(|event| relevant_path(root, &event.path))
-                .collect::<Vec<_>>();
-            if relevant.is_empty() {
-                return;
-            }
-            relevant.sort_by(|left, right| left.path.cmp(&right.path));
-            let prefixes = relevant
-                .iter()
-                .filter_map(|event| canonical_project_prefix(root, &event.path))
-                .collect::<BTreeSet<_>>();
-            changes.notify(
-                (prefixes.len() == 1).then(|| prefixes.into_iter().next().unwrap()),
-                "filesystem",
-            );
-        }
-        Err(_) => changes.notify(None, "watcher_error"),
+    let relevant = paths
+        .into_iter()
+        .filter(|path| relevant_path(root, path))
+        .collect::<Vec<_>>();
+    if relevant.is_empty() {
+        return true;
     }
+    let prefixes = relevant
+        .iter()
+        .filter_map(|path| canonical_project_prefix(root, path))
+        .collect::<BTreeSet<_>>();
+    changes.notify(
+        (prefixes.len() == 1).then(|| prefixes.into_iter().next().unwrap()),
+        "filesystem",
+    );
+    true
 }
 
 fn canonical_project_prefix(root: &Path, changed: &Path) -> Option<String> {

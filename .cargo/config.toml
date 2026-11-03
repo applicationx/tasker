@@ -1,0 +1,9 @@
+# AppX Nexus cargo registries (sparse protocol; Nexus requires authentication).
+# `appx` (cargo-group) is for installing; `appx-hosted` is the publish target.
+# Tokens never live here: run `cargo login --registry <name>` once per machine
+# with "Basic <base64 appx:password>"; see README "Install from AppX Nexus".
+[registries.appx]
+index = "sparse+https://nexus.appx-labs.com/repository/cargo-group/"
+
+[registries.appx-hosted]
+index = "sparse+https://nexus.appx-labs.com/repository/cargo-hosted/"

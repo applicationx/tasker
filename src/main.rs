@@ -35,6 +35,15 @@ fn main() -> ExitCode {
             return ExitCode::from(app_error.exit_code());
         }
     };
+    if let Some(root) = tasker::mcp_request(&cli) {
+        return match tasker::serve_mcp(root) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("tasker mcp: {error}");
+                ExitCode::from(8)
+            }
+        };
+    }
     let format = cli.effective_output();
     match execute(&cli) {
         Ok(value) => {

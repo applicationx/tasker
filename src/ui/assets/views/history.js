@@ -1,5 +1,5 @@
-import { badge, button, el, emptyState, jsonBlock, labeledField, pageHeader, timeElement, toneFor } from "../dom.js";
-import { eventsFrom } from "../model.js";
+import { avatar, button, el, emptyState, jsonBlock, pageHeader, timeElement } from "../dom.js";
+import { eventsFrom, userFrom } from "../model.js";
 import { projectHref, taskHref } from "../router.js";
 
 export async function renderHistory(ctx) {
@@ -12,48 +12,65 @@ export async function renderHistory(ctx) {
     (!actionFilter || String(event.action || "").toLowerCase().includes(actionFilter.toLowerCase()))
     && (!taskFilter || String(event.task_id || "").toLowerCase().includes(taskFilter.toLowerCase())),
   );
-  const root = el("div", {}, pageHeader(
-    ctx.prefix,
-    "Immutable history",
-    "Each entry is a changelog event read from disk. History is never edited from the Web UI.",
-  ));
+  const root = el("div", {}, pageHeader(null, "History", "Every mutation, immutable, with the revision it produced."));
   root.append(historyFilters(ctx, actionFilter, taskFilter, limit));
   if (!events.length) {
     root.append(emptyState("No events on this page", actionFilter || taskFilter ? "Change the filters or page to see other events." : "Project mutations will append immutable changelog events."));
     return root;
   }
+  root.append(el("div", { className: "event-table" }, el("ol", { className: "event-list" }, events.map((event) => {
+    const actorId = event.actor?.id;
+    const user = actorId ? { ...(userFrom(ctx.snapshot, actorId) || {}), name: event.actor?.name || actorId } : null;
+    const detail = changeSummary(event.changes);
+    return el("li", { className: "event" },
+      timeElement(event.timestamp),
+      el("span", { className: "event-actor" }, avatar(user, "xs"), el("span", { text: user?.name || "Unknown actor" })),
+      el("span", { className: "event-copy" },
+        el("span", { className: "mono", text: event.action || "unknown.action" }),
+        event.task_id ? [el("span", { className: "sep", text: " · " }), el("a", { className: "mono", href: taskHref(ctx.prefix, event.task_id), text: event.task_id })] : null,
+        detail ? [el("span", { className: "sep", text: " · " }), detail] : null,
+      ),
+      el("span", { className: "event-rev", text: event.task_revision !== undefined && event.task_revision !== null ? `rev ${event.task_revision}` : "" }),
+      event.changes && Object.keys(event.changes).length ? el("details", {},
+        el("summary", { text: "Recorded changes" }),
+        jsonBlock(event.changes),
+      ) : null,
+    );
+  }))));
   root.append(el("div", { className: "results-meta" },
     el("span", { text: `Events ${offset + 1}–${offset + events.length}` }),
     historyPagination(ctx, offset, limit, eventsFrom(data).length, actionFilter, taskFilter),
   ));
-  root.append(el("ol", { className: "event-list" }, events.map((event) => el("li", { className: "card event" },
-    timeElement(event.timestamp, "long"),
-    el("div", {},
-      el("div", { className: "event-action", text: event.action || "unknown.action" }),
-      el("div", { className: "event-copy" },
-        event.actor?.name || event.actor?.id || "Unknown actor",
-        event.task_id ? " · " : null,
-        event.task_id ? el("a", { href: taskHref(ctx.prefix, event.task_id), text: event.task_id }) : null,
-      ),
-    ),
-    event.task_revision !== undefined && event.task_revision !== null ? badge(`r${event.task_revision}`, toneFor(event.action)) : null,
-    event.changes && Object.keys(event.changes).length ? el("details", {},
-      el("summary", { text: "View recorded changes" }),
-      jsonBlock(event.changes),
-    ) : null,
-  ))));
   return root;
 }
 
+// One-line human summary of before/after changes; the full payload stays in the details disclosure.
+function changeSummary(changes) {
+  if (!changes || typeof changes !== "object") return "";
+  const parts = [];
+  for (const [field, value] of Object.entries(changes).slice(0, 2)) {
+    if (value && typeof value === "object" && ("from" in value || "to" in value)) {
+      parts.push(`${field}: ${short(value.from)} → ${short(value.to)}`);
+    } else {
+      parts.push(field);
+    }
+  }
+  const extra = Object.keys(changes).length - parts.length;
+  return parts.join(", ") + (extra > 0 ? ` +${extra}` : "");
+}
+
+function short(value) {
+  if (value === null || value === undefined) return "none";
+  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+}
+
 function historyFilters(ctx, action, task, limit) {
-  const actionInput = el("input", { type: "search", value: action, placeholder: "resource.updated" });
-  const taskInput = el("input", { type: "search", value: task, placeholder: `${ctx.prefix}-12` });
-  const form = el("form", { className: "card filter-bar", role: "search" },
-    el("div", { className: "filter-grid" },
-      labeledField("Action contains", actionInput),
-      labeledField("Task ID contains", taskInput),
-      button("Apply filters", { kind: "submit", className: "button primary" }),
-    ),
+  const actionInput = el("input", { type: "search", className: "search-input", value: action, placeholder: "Action contains… (task.transition)", "aria-label": "Action contains" });
+  const taskInput = el("input", { type: "search", className: "compact-input", value: task, placeholder: `${ctx.prefix}-12`, "aria-label": "Task ID contains" });
+  const form = el("form", { className: "filter-bar", role: "search" },
+    actionInput, taskInput,
+    button("Filter", { kind: "submit", className: "button" }),
   );
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -73,7 +90,7 @@ function historyPagination(ctx, offset, limit, received, action, task) {
     if (task) query.set("task", task);
     return `${projectHref(ctx.prefix, "history")}?${query}`;
   };
-  if (offset > 0) nav.append(el("a", { className: "button", href: href(Math.max(0, offset - limit)), text: "Previous" }));
-  if (received === limit) nav.append(el("a", { className: "button", href: href(offset + limit), text: "Next" }));
+  if (offset > 0) nav.append(el("a", { href: href(Math.max(0, offset - limit)), text: "← Newer" }));
+  if (received === limit) nav.append(el("a", { href: href(offset + limit), text: "Older →" }));
   return nav;
 }

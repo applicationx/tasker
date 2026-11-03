@@ -5,7 +5,7 @@ import { projectHref } from "../router.js";
 export function renderProjects(ctx) {
   const projects = projectsFrom(ctx.projects);
   const root = el("div", {},
-    pageHeader("Workspace", "Choose a project", "Projects are read directly from your configured Tasker root. Manual edits and Git checkouts appear on refresh."),
+    pageHeader(null, "Projects", "Projects are read directly from your configured Tasker root. Manual edits and Git checkouts appear on refresh."),
   );
 
   if (!projects.length) {

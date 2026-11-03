@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#191816">
+  <meta name="theme-color" content="#1b1a18">
   <title>Tasker</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/app.css">
@@ -13,54 +13,69 @@
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="app-shell" data-shell>
-    <header class="topbar">
+    <header class="mobile-bar">
       <button class="icon-button nav-toggle" type="button" data-nav-toggle aria-controls="primary-nav" aria-expanded="false">
         <span aria-hidden="true">☰</span><span class="sr-only">Open navigation</span>
       </button>
+      <a class="brand brand-compact" href="#/projects" aria-label="Tasker projects">
+        <span class="brand-mark" aria-hidden="true">T</span>
+        <strong>Tasker</strong>
+      </a>
+    </header>
+
+    <div class="nav-scrim" data-nav-scrim hidden></div>
+    <aside class="sidebar" data-sidebar>
       <a class="brand" href="#/projects" aria-label="Tasker projects">
         <span class="brand-mark" aria-hidden="true">T</span>
-        <span><strong>Tasker</strong><small>Local workspace</small></span>
+        <span class="brand-copy">
+          <strong>Tasker</strong>
+          <small data-brand-project>Local workspace</small>
+        </span>
       </a>
-      <div class="topbar-context">
-        <label class="compact-field project-field" for="project-switcher">
-          <span>Project</span>
-          <select id="project-switcher" data-project-switcher aria-label="Switch project">
-            <option value="">Projects</option>
-          </select>
-        </label>
-        <label class="compact-field actor-field" for="actor-switcher">
-          <span>Acting as</span>
+
+      <label class="sidebar-field" for="project-switcher">
+        <span class="sr-only">Project</span>
+        <select id="project-switcher" data-project-switcher aria-label="Switch project">
+          <option value="">Projects</option>
+        </select>
+      </label>
+
+      <nav id="primary-nav" aria-label="Primary navigation">
+        <a class="nav-link" href="#/projects" data-nav="projects" data-no-project>
+          <span class="nav-dot" aria-hidden="true"></span><span class="nav-label">All projects</span>
+        </a>
+        <div class="nav-group" data-project-nav hidden>
+          <a class="nav-link" href="#/projects" data-project-route="overview"><span class="nav-dot" aria-hidden="true"></span><span class="nav-label">Overview</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="board"><span class="nav-dot" aria-hidden="true"></span><span class="nav-label">Board</span><span class="nav-count" data-nav-count></span></a>
+          <a class="nav-link" href="#/projects" data-project-route="tasks"><span class="nav-dot" aria-hidden="true"></span><span class="nav-label">Tasks</span><span class="nav-count" data-nav-count></span></a>
+          <a class="nav-link" href="#/projects" data-project-route="dependencies"><span class="nav-dot" aria-hidden="true"></span><span class="nav-label">Dependencies</span></a>
+          <p class="nav-heading">Context</p>
+          <a class="nav-link" href="#/projects" data-project-route="knowledge"><span class="nav-dot" aria-hidden="true"></span><span class="nav-label">Knowledge</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="history"><span class="nav-dot" aria-hidden="true"></span><span class="nav-label">History</span></a>
+          <a class="nav-link" href="#/projects" data-project-route="workflow"><span class="nav-dot" aria-hidden="true"></span><span class="nav-label">Workflow</span></a>
+        </div>
+      </nav>
+
+      <section class="working-now" data-working-now hidden aria-labelledby="working-now-heading">
+        <h2 id="working-now-heading" class="nav-heading">Working now</h2>
+        <ul data-working-list></ul>
+      </section>
+
+      <div class="sidebar-footer">
+        <label class="sidebar-field" for="actor-switcher">
+          <span class="nav-heading">Acting as</span>
           <select id="actor-switcher" data-actor-switcher aria-describedby="actor-help" disabled>
             <option value="">No project user</option>
           </select>
         </label>
         <span id="actor-help" class="sr-only">The selected identity is recorded as attribution. It is not authentication.</span>
-        <button class="icon-button refresh-button" type="button" data-refresh title="Refresh from disk">
-          <span aria-hidden="true">↻</span><span class="button-label">Refresh</span>
-        </button>
-      </div>
-    </header>
-
-    <div class="nav-scrim" data-nav-scrim hidden></div>
-    <aside class="sidebar" data-sidebar>
-      <nav id="primary-nav" aria-label="Primary navigation">
-        <a class="nav-link projects-link" href="#/projects" data-nav="projects">
-          <span aria-hidden="true">⌂</span><span>Projects</span>
-        </a>
-        <div class="nav-project" data-project-nav hidden>
-          <p class="nav-heading" data-nav-project-name>Project</p>
-          <a class="nav-link" href="#/projects" data-project-route="overview"><span aria-hidden="true">◫</span><span>Overview</span></a>
-          <a class="nav-link" href="#/projects" data-project-route="board"><span aria-hidden="true">▥</span><span>Board</span></a>
-          <a class="nav-link" href="#/projects" data-project-route="tasks"><span aria-hidden="true">☷</span><span>Tasks</span></a>
-          <a class="nav-link" href="#/projects" data-project-route="dependencies"><span aria-hidden="true">⌁</span><span>Dependencies</span></a>
-          <a class="nav-link" href="#/projects" data-project-route="knowledge"><span aria-hidden="true">◇</span><span>Knowledge</span></a>
-          <a class="nav-link" href="#/projects" data-project-route="history"><span aria-hidden="true">◷</span><span>History</span></a>
-          <a class="nav-link" href="#/projects" data-project-route="workflow"><span aria-hidden="true">⇢</span><span>Workflow</span></a>
+        <div class="sidebar-meta">
+          <span class="local-dot" aria-hidden="true"></span>
+          <span>Filesystem is authoritative</span>
+          <button class="icon-button refresh-button" type="button" data-refresh title="Refresh from disk">
+            <span aria-hidden="true">↻</span><span class="sr-only">Refresh from disk</span>
+          </button>
         </div>
-      </nav>
-      <div class="sidebar-note">
-        <span class="local-dot" aria-hidden="true"></span>
-        <span>Local filesystem is authoritative</span>
       </div>
     </aside>
 

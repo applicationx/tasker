@@ -7,15 +7,34 @@ use chrono::{SecondsFormat, Utc};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub fn execute(cli: &Cli) -> Result<Value> {
+    let _root = cli
+        .root
+        .as_deref()
+        .map(|root| storage::scoped_root(storage::expand_path(root)));
     match &cli.command {
         Command::Ui { command } => crate::ui::command(cli, command),
         Command::Config { command } => config_command(command),
         Command::Create { command } => create_command(cli, command),
         Command::Project { command } => crate::knowledge::commands::project_command(cli, command),
         Command::Ensure { command } => ensure_command(cli, command),
-        Command::List { command } => list_command(cli, command),
+        Command::List {
+            stats,
+            command: None,
+        } => list_boards(*stats),
+        Command::List {
+            command: Some(command),
+            ..
+        } => list_command(cli, command),
+        Command::Init(args) => init_command(cli, args),
+        Command::Root { command } => root_command(command),
+        Command::Mcp { .. } => Err(AppError::input(
+            "tasker mcp serves stdio and cannot run as a nested command",
+        )),
+        Command::Type { command } => type_command(cli, command),
+        Command::Skill { command } => crate::skill::command(command),
         Command::Get { command } => get_command(cli, command),
         Command::Update { command } => update_command(cli, command),
         Command::Archive { command } => match command {
@@ -94,7 +113,7 @@ fn ensure_command(cli: &Cli, command: &EnsureCommand) -> Result<Value> {
 
 fn list_command(cli: &Cli, command: &ListCommand) -> Result<Value> {
     match command {
-        ListCommand::Projects { stats } => list_projects(*stats),
+        ListCommand::Projects { stats } => list_projects_in(&storage::projects_root(), *stats),
         ListCommand::Tasks(filters) => {
             let project = project_for(cli, None)?;
             let (_lock, project) = lock_and_recover(project)?;
@@ -198,6 +217,19 @@ fn valid_prefix(prefix: &str) -> bool {
 }
 
 fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
+    let (root, source) = storage::projects_root_with_source();
+    let mut value = create_project_in(cli, args, &root)?;
+    // Best effort: a board created inside a .tasker folder becomes listable
+    // everywhere, but a registry problem never fails the project creation.
+    if source == storage::RootSource::Workspace
+        && let Err(error) = crate::registry::add(&root)
+    {
+        value["warnings"] = json!([problem("registry_update_failed", &error.message, json!({}))]);
+    }
+    Ok(value)
+}
+
+fn create_project_in(cli: &Cli, args: &CreateProjectArgs, root: &Path) -> Result<Value> {
     if args.name.trim().is_empty() {
         return Err(AppError::input("Project name cannot be empty"));
     }
@@ -205,8 +237,8 @@ fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
         return Err(AppError::input("Prefix must match ^[A-Z][A-Z0-9]{1,9}$")
             .detail("prefix", args.prefix.clone()));
     }
-    let _root_lock = storage::lock_projects_root()?;
-    if storage::discover_projects()?
+    let _root_lock = storage::lock_root(root)?;
+    if storage::discover_projects_in(root)?
         .iter()
         .any(|project| project.config.prefix.eq_ignore_ascii_case(&args.prefix))
     {
@@ -221,7 +253,7 @@ fn create_project(cli: &Cli, args: &CreateProjectArgs) -> Result<Value> {
         .path
         .as_deref()
         .map(storage::expand_path)
-        .unwrap_or_else(|| storage::projects_root().join(slug(&args.name)));
+        .unwrap_or_else(|| root.join(slug(&args.name)));
     if path.exists()
         && fs::read_dir(&path)
             .map(|mut entries| entries.next().is_some())
@@ -289,6 +321,8 @@ fn project_value(project: &Project) -> Result<Value> {
         "path": project.path.to_string_lossy(),
         "workflow": project.config.workflow,
         "relations": project.config.relations,
+        "task_types": project.config.effective_task_types(),
+        "default_task_type": project.config.default_type(),
         "config_file": project.path.join("tasker.yaml").to_string_lossy(),
     });
     let summary = crate::knowledge::commands::project_summary(project)?;
@@ -299,8 +333,8 @@ fn project_value(project: &Project) -> Result<Value> {
     Ok(value)
 }
 
-fn list_projects(stats: bool) -> Result<Value> {
-    let projects = storage::discover_projects()?;
+fn list_projects_in(root: &Path, stats: bool) -> Result<Value> {
+    let projects = storage::discover_projects_in(root)?;
     if !stats {
         return to_value(
             projects
@@ -326,6 +360,175 @@ fn list_projects(stats: bool) -> Result<Value> {
         );
     }
     Ok(Value::Array(values))
+}
+
+/// Lists the effective root and every registered root. Registered roots are
+/// hints only: a missing or unreadable one becomes a warning.
+fn list_boards(stats: bool) -> Result<Value> {
+    let (current, source) = storage::projects_root_with_source();
+    let current_display = crate::registry::display_path(&current);
+    let mut warnings = Vec::new();
+    let registered = match crate::registry::load() {
+        Ok(registry) => registry.roots,
+        Err(error) => {
+            warnings.push(problem("registry_unreadable", &error.message, json!({})));
+            Vec::new()
+        }
+    };
+    let mut boards = vec![json!({
+        "root": current_display,
+        "source": source.as_str(),
+        "current": true,
+        "registered": registered.iter().any(|root| root.path == current_display),
+        "projects": list_projects_in(&current, stats)?,
+    })];
+    // The home board (config projects_root or ~/tasker) stays visible from inside a repository.
+    let (home, home_source) = storage::home_root_with_source();
+    let home_display = crate::registry::display_path(&home);
+    if home_display != current_display && home.is_dir() {
+        match list_projects_in(&home, stats) {
+            Ok(projects) => boards.push(json!({
+                "root": home_display,
+                "source": home_source.as_str(),
+                "current": false,
+                "registered": registered.iter().any(|root| root.path == home_display),
+                "projects": projects,
+            })),
+            Err(error) => warnings.push(problem(
+                "home_root_unreadable",
+                &error.message,
+                json!({"root": home_display}),
+            )),
+        }
+    }
+    for root in registered {
+        if root.path == current_display || root.path == home_display {
+            continue;
+        }
+        let path = PathBuf::from(&root.path);
+        if !path.is_dir() {
+            warnings.push(problem(
+                "registered_root_missing",
+                &format!("Registered board root {} no longer exists", root.path),
+                json!({"root": root.path, "suggestion": format!("tasker root remove \"{}\"", root.path)}),
+            ));
+            continue;
+        }
+        match list_projects_in(&path, stats) {
+            Ok(projects) => boards.push(json!({
+                "root": root.path,
+                "source": "registry",
+                "current": false,
+                "registered": true,
+                "projects": projects,
+            })),
+            Err(error) => warnings.push(problem(
+                "registered_root_unreadable",
+                &error.message,
+                json!({"root": root.path}),
+            )),
+        }
+    }
+    Ok(json!({"boards": boards, "warnings": warnings}))
+}
+
+const WORKSPACE_GITIGNORE: &str = "# Transient Tasker files. Everything else in .tasker is meant to be committed.\n.tasker-root.lock\n.tasker-transactions/\n";
+
+fn init_command(cli: &Cli, args: &InitArgs) -> Result<Value> {
+    let base = match &args.path {
+        Some(path) => storage::expand_path(path),
+        None => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| AppError::io(e, "cannot determine current directory"))?;
+            cwd.ancestors()
+                .find(|dir| dir.join(".git").exists())
+                .map(Path::to_path_buf)
+                .unwrap_or(cwd)
+        }
+    };
+    if !base.is_dir() {
+        return Err(
+            AppError::input(format!("{} is not an existing directory", base.display()))
+                .detail("path", base.to_string_lossy().to_string()),
+        );
+    }
+    let root = base.join(storage::WORKSPACE_DIR);
+    if root.exists() && !storage::is_real_dir(&root) {
+        return Err(AppError::new(
+            "workspace_root_invalid",
+            format!("{} exists but is not a directory", root.display()),
+            ErrorCategory::Conflict,
+        )
+        .detail("root", root.to_string_lossy().to_string()));
+    }
+    let created = !root.exists();
+    fs::create_dir_all(&root)
+        .map_err(|e| AppError::io(e, format!("cannot create {}", root.display())))?;
+    let gitignore = root.join(".gitignore");
+    let gitignore_written = !gitignore.exists();
+    if gitignore_written {
+        storage::atomic_write(&gitignore, WORKSPACE_GITIGNORE.as_bytes())?;
+    }
+    let mut warnings = Vec::new();
+    let registered = match crate::registry::add(&root) {
+        Ok((_, added)) => added,
+        Err(error) => {
+            warnings.push(problem("registry_update_failed", &error.message, json!({})));
+            false
+        }
+    };
+    let project = match (&args.name, &args.prefix) {
+        (Some(name), Some(prefix)) => {
+            let existing = storage::discover_projects_in(&root)?
+                .into_iter()
+                .find(|project| project.config.prefix.eq_ignore_ascii_case(prefix));
+            match existing {
+                Some(project) => project_value(&project)?,
+                None => create_project_in(
+                    cli,
+                    &CreateProjectArgs {
+                        name: name.clone(),
+                        prefix: prefix.clone(),
+                        path: None,
+                    },
+                    &root,
+                )?,
+            }
+        }
+        _ => Value::Null,
+    };
+    Ok(json!({
+        "root": crate::registry::display_path(&root),
+        "created": created,
+        "gitignore": gitignore_written,
+        "registered": registered,
+        "project": project,
+        "warnings": warnings,
+    }))
+}
+
+fn root_command(command: &RootCommand) -> Result<Value> {
+    match command {
+        RootCommand::List => {
+            let roots = crate::registry::load()?
+                .roots
+                .into_iter()
+                .map(|root| {
+                    let exists = Path::new(&root.path).is_dir();
+                    json!({"root": root.path, "exists": exists})
+                })
+                .collect();
+            Ok(Value::Array(roots))
+        }
+        RootCommand::Add { path } => {
+            let (root, added) = crate::registry::add(&storage::expand_path(path))?;
+            Ok(json!({"root": root, "added": added}))
+        }
+        RootCommand::Remove { path } => {
+            let (root, removed) = crate::registry::remove(&storage::expand_path(path))?;
+            Ok(json!({"root": root, "removed": removed}))
+        }
+    }
 }
 
 fn actor_name(cli: &Cli, command_actor: Option<&str>) -> String {
@@ -487,6 +690,7 @@ struct TaskInput {
     tags: Option<Vec<String>>,
     acceptance_criteria: Option<Vec<String>>,
     context_refs: Option<Vec<ContextReference>>,
+    task_type: Option<String>,
 }
 
 fn structured_task_input(
@@ -509,12 +713,13 @@ fn structured_task_input(
         .as_object()
         .ok_or_else(|| AppError::input("Task input must be an object"))?;
     let allowed = if protected {
-        &["header", "description", "tags"][..]
+        &["header", "description", "tags", "type"][..]
     } else {
         &[
             "header",
             "description",
             "tags",
+            "type",
             "acceptance_criteria",
             "context_refs",
         ][..]
@@ -536,6 +741,7 @@ fn structured_task_input(
     }
     let header = optional_string(object, "header")?;
     let description = optional_string(object, "description")?;
+    let task_type = optional_string(object, "type")?;
     let tags = match object.get("tags") {
         None => None,
         Some(value) => Some(
@@ -565,6 +771,7 @@ fn structured_task_input(
         tags,
         acceptance_criteria,
         context_refs,
+        task_type,
     })
 }
 
@@ -607,6 +814,9 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
     if !args.acceptance_criteria.is_empty() {
         input.acceptance_criteria = Some(args.acceptance_criteria.clone());
     }
+    if args.task_type.is_some() {
+        input.task_type = args.task_type.clone();
+    }
     let header = input
         .header
         .filter(|value| !value.trim().is_empty())
@@ -634,9 +844,66 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
         )?);
     }
     crate::knowledge::commands::validate_context_references(&project, &mut context_refs)?;
+    let task_type = input
+        .task_type
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| project.config.default_type());
+    ensure_task_type(&project.config, &task_type)?;
+    let existing_tasks = storage::read_tasks(&project)?;
+    let find = |id: &str| -> Result<&Task> {
+        ensure_task_id(&project, id)?;
+        existing_tasks
+            .iter()
+            .find(|task| task.id == id)
+            .ok_or_else(|| task_not_found(id))
+    };
+    for id in args.blocked_by.iter().chain(&args.blocks) {
+        find(id)?;
+    }
+    if let Some(blocker) = args.blocked_by.iter().find(|id| args.blocks.contains(id)) {
+        // The new task would both wait for and block the same task.
+        return Err(AppError::new(
+            "dependency_cycle",
+            "Adding the dependency would create a cycle",
+            ErrorCategory::Cycle,
+        )
+        .detail("cycle", json!(["(new)", blocker, "(new)"])));
+    }
+    for blocked in &args.blocks {
+        // blocked -> new -> blocker: a cycle exists when a blocker already reaches blocked.
+        for blocker in &args.blocked_by {
+            if let Some(path) = graph_path(&existing_tasks, blocker, blocked, |item| {
+                item.dependencies.clone()
+            }) {
+                let mut cycle = vec![blocked.clone(), "(new)".to_string()];
+                cycle.extend(path);
+                return Err(AppError::new(
+                    "dependency_cycle",
+                    "Adding the dependency would create a cycle",
+                    ErrorCategory::Cycle,
+                )
+                .detail("cycle", json!(cycle)));
+            }
+        }
+    }
+    let parent = match &args.parent {
+        Some(parent) => {
+            let parent_task = find(parent)?;
+            let relation = relation_type(&project, "subtask_of")?;
+            check_relation_task_types(
+                "subtask_of",
+                relation,
+                &task_type,
+                &parent_task.task_type,
+                "(new)",
+                parent,
+            )?;
+            Some(parent.clone())
+        }
+        None => None,
+    };
     let actor = actor_locked(cli, &project, None)?;
     let mut meta = storage::read_meta(&project)?;
-    let existing_tasks = storage::read_tasks(&project)?;
     let max_task_number = existing_tasks
         .iter()
         .filter_map(|task| task.id.rsplit_once('-')?.1.parse::<u64>().ok())
@@ -666,12 +933,15 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
         )
         .detail("task_id", id));
     }
+    let meta_path = project.path.join("meta.json");
+    let old_meta_bytes = fs::read(&meta_path)
+        .map_err(|error| AppError::io(error, "cannot read meta.json before task creation"))?;
     meta.next_task_number += 1;
-    storage::write_meta(&project, &meta)?;
     let timestamp = now();
     let mut task = Task {
         schema_version: SCHEMA_VERSION,
         id,
+        task_type,
         header: header.trim().to_string(),
         description: input.description.unwrap_or_default(),
         acceptance_criteria: {
@@ -694,8 +964,14 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
         state: project.config.workflow.initial_state.clone(),
         assignee: None,
         tags: input.tags.unwrap_or_default(),
-        dependencies: vec![],
-        relations: vec![],
+        dependencies: args.blocked_by.clone(),
+        relations: parent
+            .into_iter()
+            .map(|target| Relation {
+                kind: "subtask_of".into(),
+                target,
+            })
+            .collect(),
         created_at: timestamp.clone(),
         created_by: actor.id.clone(),
         updated_at: timestamp,
@@ -704,16 +980,134 @@ fn create_task(cli: &Cli, args: &CreateTaskArgs) -> Result<Value> {
     };
     task.next_acceptance_number = task.acceptance_criteria.len() as u64 + 1;
     task.normalize();
-    storage::write_task(&project, &task)?;
-    event(
+    if args.blocks.is_empty() {
+        storage::write_meta(&project, &meta)?;
+        storage::write_task(&project, &task)?;
+        event(
+            &project,
+            &actor,
+            "task.created",
+            Some(&task.id),
+            Some(task.revision),
+            json!({"task": {"from": null, "to": task}}),
+        )?;
+        return to_value(task);
+    }
+    // --blocks also changes existing tasks, so every file lands in one transaction.
+    let mut files = vec![
+        (meta_path, Some(old_meta_bytes), json_bytes(&meta)?),
+        (
+            project.path.join("tasks").join(format!("{}.json", task.id)),
+            None,
+            json_bytes(&task)?,
+        ),
+    ];
+    let mut blocked_tasks = Vec::new();
+    for blocked in &args.blocks {
+        let mut other = find(blocked)?.clone();
+        let path = project
+            .path
+            .join("tasks")
+            .join(format!("{}.json", other.id));
+        let before = fs::read(&path)
+            .map_err(|error| AppError::io(error, format!("cannot read {}", path.display())))?;
+        other.dependencies.push(task.id.clone());
+        other.normalize();
+        other.revision += 1;
+        other.updated_at = task.created_at.clone();
+        other.updated_by = actor.id.clone();
+        files.push((path, Some(before), json_bytes(&other)?));
+        blocked_tasks.push(other);
+    }
+    let batch = crate::transaction::MutationBatch::prepare(&project, "task.created", files)?;
+    batch.apply(&project)?;
+    if let Err(error) = event(
         &project,
         &actor,
         "task.created",
         Some(&task.id),
         Some(task.revision),
-        json!({"task": {"from": null, "to": task}}),
-    )?;
+        json!({"task": {"from": null, "to": task}, "transaction_id": batch.id()}),
+    ) {
+        batch.rollback(&project)?;
+        batch.finish()?;
+        return Err(error);
+    }
+    batch.finish()?;
+    for other in &blocked_tasks {
+        event(
+            &project,
+            &actor,
+            "task.dependency_added",
+            Some(&other.id),
+            Some(other.revision),
+            json!({"dependency": {"from": null, "to": task.id}}),
+        )?;
+    }
     to_value(task)
+}
+
+fn json_bytes<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec_pretty(value)
+        .map_err(|e| AppError::input(format!("cannot serialize JSON: {e}")))?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn task_not_found(id: &str) -> AppError {
+    AppError::new(
+        "task_not_found",
+        format!("Task {id} does not exist"),
+        ErrorCategory::NotFound,
+    )
+    .detail("task_id", id.to_string())
+}
+
+pub(crate) fn ensure_task_type(config: &ProjectConfig, name: &str) -> Result<()> {
+    if config.has_task_type(name) {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "unknown_task_type",
+        format!("Unknown task type {name}"),
+        ErrorCategory::Validation,
+    )
+    .detail("task_type", name.to_string())
+    .detail(
+        "configured_task_types",
+        json!(config.effective_task_types().keys().collect::<Vec<_>>()),
+    ))
+}
+
+/// Enforces a relation type's optional source_types/target_types rules.
+fn check_relation_task_types(
+    kind: &str,
+    relation: &RelationType,
+    source_type: &str,
+    target_type: &str,
+    source: &str,
+    target: &str,
+) -> Result<()> {
+    let allows = |allowed: &[String], value: &str| {
+        allowed.is_empty() || allowed.iter().any(|item| item == value)
+    };
+    if allows(&relation.source_types, source_type) && allows(&relation.target_types, target_type) {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "relation_type_mismatch",
+        format!(
+            "Relation {kind} does not allow {source} ({source_type}) -> {target} ({target_type})"
+        ),
+        ErrorCategory::Validation,
+    )
+    .detail("relation_type", kind.to_string())
+    .detail("source", source.to_string())
+    .detail("source_type", source_type.to_string())
+    .detail("target", target.to_string())
+    .detail("target_type", target_type.to_string())
+    .detail("allowed_source_types", json!(relation.source_types))
+    .detail("allowed_target_types", json!(relation.target_types)))
 }
 
 fn update_task(cli: &Cli, args: &UpdateTaskArgs) -> Result<Value> {
@@ -728,7 +1122,14 @@ fn update_task(cli: &Cli, args: &UpdateTaskArgs) -> Result<Value> {
     if !args.tags.is_empty() || args.clear_tags {
         patch.tags = Some(args.tags.clone());
     }
-    if patch.header.is_none() && patch.description.is_none() && patch.tags.is_none() {
+    if args.task_type.is_some() {
+        patch.task_type = args.task_type.clone();
+    }
+    if patch.header.is_none()
+        && patch.description.is_none()
+        && patch.tags.is_none()
+        && patch.task_type.is_none()
+    {
         return Err(AppError::input("No mutable task fields were supplied"));
     }
     mutate_task(
@@ -764,6 +1165,17 @@ fn update_task(cli: &Cli, args: &UpdateTaskArgs) -> Result<Value> {
                     changes.insert("tags".into(), json!({"from": old, "to": task.tags}));
                 }
             }
+            if let Some(task_type) = patch.task_type.map(|value| value.trim().to_string())
+                && task.task_type != task_type
+            {
+                ensure_task_type(&project.config, &task_type)?;
+                check_task_type_change(project, task, &task_type)?;
+                changes.insert(
+                    "type".into(),
+                    json!({"from": task.task_type, "to": task_type}),
+                );
+                task.task_type = task_type;
+            }
             if changes.is_empty() {
                 return Ok(("task.updated", Value::Object(changes), false));
             }
@@ -771,6 +1183,45 @@ fn update_task(cli: &Cli, args: &UpdateTaskArgs) -> Result<Value> {
             Ok(("task.updated", Value::Object(changes), true))
         },
     )
+}
+
+/// Re-checks relation type rules on every edge touching `task` as if it had `new_type`.
+fn check_task_type_change(project: &Project, task: &Task, new_type: &str) -> Result<()> {
+    let tasks = storage::read_tasks(project)?;
+    let type_of = |id: &str| {
+        if id == task.id {
+            new_type.to_string()
+        } else {
+            tasks
+                .iter()
+                .find(|other| other.id == id)
+                .map(|other| other.task_type.clone())
+                .unwrap_or_default()
+        }
+    };
+    let mut edges: Vec<(String, String, String)> = task
+        .relations
+        .iter()
+        .map(|r| (task.id.clone(), r.kind.clone(), r.target.clone()))
+        .collect();
+    for other in tasks.iter().filter(|other| other.id != task.id) {
+        for r in other.relations.iter().filter(|r| r.target == task.id) {
+            edges.push((other.id.clone(), r.kind.clone(), r.target.clone()));
+        }
+    }
+    for (source, kind, target) in edges {
+        if let Some(relation) = project.config.relations.get(&kind) {
+            check_relation_task_types(
+                &kind,
+                relation,
+                &type_of(&source),
+                &type_of(&target),
+                &source,
+                &target,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn check_revision(task: &Task, expected: Option<u64>) -> Result<()> {
@@ -882,6 +1333,7 @@ fn transition_command(cli: &Cli, args: &TransitionArgs) -> Result<Value> {
         None,
         move |project, _, task| {
             verify_transition(&project.config, &task.state, &target)?;
+            verify_dependencies_for_target(project, task, &target)?;
             let remaining: Vec<String> = task
                 .acceptance_criteria
                 .iter()
@@ -945,6 +1397,44 @@ pub(crate) fn verify_transition(config: &ProjectConfig, current: &str, target: &
     Ok(())
 }
 
+/// Entering the claim state or a dependency-satisfying state requires every
+/// blocker (`blocked_by`) to be satisfied; other targets stay unrestricted.
+pub(crate) fn verify_dependencies_for_target(
+    project: &Project,
+    task: &Task,
+    target: &str,
+) -> Result<()> {
+    let config = &project.config;
+    let gated = target == config.workflow.claim_state
+        || config
+            .workflow
+            .states
+            .get(target)
+            .is_some_and(|state| state.dependency_satisfied);
+    if !gated || task.dependencies.is_empty() {
+        return Ok(());
+    }
+    let tasks: HashMap<String, Task> = storage::read_tasks(project)?
+        .into_iter()
+        .map(|task| (task.id.clone(), task))
+        .collect();
+    let unresolved = unresolved_dependencies(task, &tasks, config);
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "dependencies_unsatisfied",
+        format!(
+            "Task {} cannot enter {target} while it is blocked by unresolved tasks",
+            task.id
+        ),
+        ErrorCategory::Validation,
+    )
+    .detail("task_id", task.id.clone())
+    .detail("requested_state", target.to_string())
+    .detail("unresolved_dependencies", json!(unresolved)))
+}
+
 fn unresolved_dependencies(
     task: &Task,
     tasks: &HashMap<String, Task>,
@@ -992,6 +1482,19 @@ pub(crate) fn status_for(
         .filter(|criterion| !criterion.completed)
         .map(|criterion| criterion.id.clone())
         .collect();
+    let blocked_by = task
+        .dependencies
+        .iter()
+        .map(|id| {
+            let dependency = tasks.get(id);
+            BlockerView {
+                id: id.clone(),
+                header: dependency.map(|d| d.header.clone()).unwrap_or_default(),
+                state: dependency.map(|d| d.state.clone()).unwrap_or_default(),
+                satisfied: !unresolved.contains(id),
+            }
+        })
+        .collect();
     StatusView {
         id: task.id.clone(),
         state: task.state.clone(),
@@ -1002,9 +1505,21 @@ pub(crate) fn status_for(
         acceptance_criteria_remaining,
         dependency_blocked: !unresolved.is_empty(),
         unresolved_dependencies: unresolved,
+        blocked_by,
+        blocks: dependents_of(&task.id, tasks.values()),
         allowed_transitions: allowed,
         claimable,
     }
+}
+
+/// Tasks that directly depend on `id`, in numeric ID order.
+pub(crate) fn dependents_of<'a>(id: &str, tasks: impl Iterator<Item = &'a Task>) -> Vec<String> {
+    let mut ids: Vec<String> = tasks
+        .filter(|task| task.dependencies.iter().any(|dependency| dependency == id))
+        .map(|task| task.id.clone())
+        .collect();
+    ids.sort_by(|a, b| task_id_cmp(a, b));
+    ids
 }
 
 fn status_command(cli: &Cli, id: &str) -> Result<Value> {
@@ -1314,9 +1829,13 @@ fn dependency_check(cli: &Cli, id: &str) -> Result<Value> {
         .map(|task| (task.id.clone(), task))
         .collect();
     let unresolved = unresolved_dependencies(&task, &tasks, &project.config);
-    Ok(
-        json!({"task_id": id, "dependency_blocked": !unresolved.is_empty(), "unresolved_dependencies": unresolved}),
-    )
+    Ok(json!({
+        "task_id": id,
+        "dependency_blocked": !unresolved.is_empty(),
+        "unresolved_dependencies": unresolved,
+        "blocked_by": task.dependencies,
+        "blocks": dependents_of(id, tasks.values()),
+    }))
 }
 
 fn acceptance_command(cli: &Cli, command: &AcceptanceCommand) -> Result<Value> {
@@ -1579,7 +2098,24 @@ fn relation_type<'a>(project: &'a Project, kind: &str) -> Result<&'a RelationTyp
     })
 }
 
+/// Maps `blocked_by`/`blocks` onto the dependency stored on the blocked task.
+fn dependency_alias(args: &RelationMutationArgs) -> Option<PairTaskArgs> {
+    let (task, dependency) = match args.kind.as_str() {
+        "blocked_by" => (&args.from, &args.to),
+        "blocks" => (&args.to, &args.from),
+        _ => return None,
+    };
+    Some(PairTaskArgs {
+        task: task.clone(),
+        dependency: dependency.clone(),
+        if_revision: args.if_revision,
+    })
+}
+
 fn relation_add(cli: &Cli, args: &RelationMutationArgs) -> Result<Value> {
+    if let Some(pair) = dependency_alias(args) {
+        return dependency_add(cli, &pair);
+    }
     if args.from == args.to {
         return Err(AppError::new(
             "self_relation",
@@ -1597,7 +2133,15 @@ fn relation_add(cli: &Cli, args: &RelationMutationArgs) -> Result<Value> {
         move |project, _, task| {
             let config = relation_type(project, &kind)?.clone();
             ensure_task_id(project, &target)?;
-            storage::read_task(project, &target)?;
+            let target_task = storage::read_task(project, &target)?;
+            check_relation_task_types(
+                &kind,
+                &config,
+                &task.task_type,
+                &target_task.task_type,
+                &task.id,
+                &target,
+            )?;
             let tasks = storage::read_tasks(project)?;
             let duplicate = task
                 .relations
@@ -1669,6 +2213,9 @@ fn relation_add(cli: &Cli, args: &RelationMutationArgs) -> Result<Value> {
 }
 
 fn relation_remove(cli: &Cli, args: &RelationMutationArgs) -> Result<Value> {
+    if let Some(pair) = dependency_alias(args) {
+        return dependency_remove(cli, &pair);
+    }
     let kind = args.kind.clone();
     let target = args.to.clone();
     mutate_task(
@@ -1714,6 +2261,14 @@ fn relation_list(cli: &Cli, args: &RelationListArgs) -> Result<Value> {
                 direction: "outgoing".into(),
             });
         }
+        for dependency in &task.dependencies {
+            result.push(RelationView {
+                source: task.id.clone(),
+                kind: "blocked_by".into(),
+                target: dependency.clone(),
+                direction: "outgoing".into(),
+            });
+        }
     }
     if matches!(args.direction, Direction::Incoming | Direction::Both) {
         for task in &tasks {
@@ -1735,6 +2290,14 @@ fn relation_list(cli: &Cli, args: &RelationListArgs) -> Result<Value> {
                     direction: "incoming".into(),
                 });
             }
+        }
+        for dependent in dependents_of(&args.task, tasks.iter()) {
+            result.push(RelationView {
+                source: args.task.clone(),
+                kind: "blocks".into(),
+                target: dependent,
+                direction: "incoming".into(),
+            });
         }
     }
     result.sort_by(|a, b| {
@@ -1790,6 +2353,9 @@ fn tasks_output(
             ));
         }
     }
+    for task_type in &filters.types {
+        ensure_task_type(&project.config, task_type)?;
+    }
     let assignee = filters
         .assignee
         .as_deref()
@@ -1805,6 +2371,9 @@ fn tasks_output(
         .into_iter()
         .filter(|task| {
             if !filters.states.is_empty() && !filters.states.contains(&task.state) {
+                return false;
+            }
+            if !filters.types.is_empty() && !filters.types.contains(&task.task_type) {
                 return false;
             }
             if !filters
@@ -1864,8 +2433,9 @@ fn tasks_output(
                     .collect::<Vec<_>>()
                     .join(" ");
                 let text = format!(
-                    "{} {} {} {} {} {} {} {} {}",
+                    "{} {} {} {} {} {} {} {} {} {}",
                     task.id,
+                    task.task_type,
                     task.header,
                     task.description,
                     acceptance,
@@ -1904,6 +2474,7 @@ fn tasks_output(
 fn summary(project: &Project, tasks: &HashMap<String, Task>, task: &Task) -> TaskSummary {
     TaskSummary {
         id: task.id.clone(),
+        task_type: task.task_type.clone(),
         header: task.header.clone(),
         state: task.state.clone(),
         assignee: task.assignee.clone(),
@@ -1992,7 +2563,108 @@ fn validate_project_config(config: &ProjectConfig) -> Result<()> {
             ));
         }
     }
+    for name in config.task_types.keys() {
+        if !valid_type_name(name) {
+            return Err(AppError::project(format!(
+                "Task type {name} must match ^[a-z][a-z0-9_]*$"
+            )));
+        }
+    }
+    if !config.has_task_type(&config.default_type()) {
+        return Err(AppError::project(
+            "default_task_type is not a configured task type",
+        ));
+    }
+    for (kind, relation) in &config.relations {
+        if RESERVED_RELATIONS.contains(&kind.as_str()) {
+            return Err(AppError::project(format!(
+                "Relation type {kind} is reserved for dependencies; use tasker dependency"
+            )));
+        }
+        if let Some(unknown) = relation
+            .source_types
+            .iter()
+            .chain(&relation.target_types)
+            .find(|name| !config.has_task_type(name))
+        {
+            return Err(AppError::project(format!(
+                "Relation type {kind} references unknown task type {unknown}"
+            )));
+        }
+    }
     Ok(())
+}
+
+fn valid_type_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn type_command(cli: &Cli, command: &TypeCommand) -> Result<Value> {
+    let project = project_for(cli, None)?;
+    let (_lock, project) = lock_and_recover(project)?;
+    match command {
+        TypeCommand::List => {
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for task in storage::read_tasks(&project)? {
+                *counts.entry(task.task_type).or_default() += 1;
+            }
+            let default = project.config.default_type();
+            let types: Vec<Value> = project
+                .config
+                .effective_task_types()
+                .into_iter()
+                .map(|(name, config)| {
+                    json!({
+                        "name": name,
+                        "label": config.label,
+                        "description": config.description,
+                        "default": name == default,
+                        "task_count": counts.get(&name).copied().unwrap_or(0),
+                    })
+                })
+                .collect();
+            Ok(Value::Array(types))
+        }
+        TypeCommand::Add(args) => {
+            let name = args.name.trim().to_string();
+            if !valid_type_name(&name) {
+                return Err(AppError::input("Task type must match ^[a-z][a-z0-9_]*$")
+                    .detail("task_type", name));
+            }
+            validate_project_config(&project.config)?;
+            if project.config.has_task_type(&name) {
+                return Err(AppError::new(
+                    "task_type_exists",
+                    format!("Task type {name} already exists"),
+                    ErrorCategory::Conflict,
+                )
+                .detail("task_type", name));
+            }
+            let mut config = project.config.clone();
+            config.task_types = config.effective_task_types();
+            let added = TaskTypeConfig {
+                label: args.label.clone().unwrap_or_else(|| name.clone()),
+                description: args.description.clone().unwrap_or_default(),
+            };
+            config.task_types.insert(name.clone(), added.clone());
+            let actor = actor_locked(cli, &project, None)?;
+            storage::write_yaml(&project.path.join("tasker.yaml"), &config)?;
+            event(
+                &project,
+                &actor,
+                "project.task_type_added",
+                None,
+                None,
+                json!({"task_type": {"from": null, "to": {"name": name, "config": added}}}),
+            )?;
+            project_value(&Project {
+                path: project.path.clone(),
+                config,
+            })
+        }
+    }
 }
 
 fn validate_command(cli: &Cli) -> Result<Value> {
@@ -2043,6 +2715,13 @@ pub(crate) fn validate_loaded_project(project: &Project) -> Result<Value> {
                         "task_prefix_mismatch",
                         "Task ID prefix differs from project",
                         json!({"task_id": task.id}),
+                    ));
+                }
+                if !project.config.has_task_type(&task.task_type) {
+                    errors.push(problem(
+                        "unknown_task_type",
+                        "Task has an unknown type",
+                        json!({"task_id": task.id, "type": task.task_type}),
                     ));
                 }
                 if !project.config.workflow.states.contains_key(&task.state) {
@@ -2198,6 +2877,23 @@ pub(crate) fn validate_loaded_project(project: &Project) -> Result<Value> {
                     "relation_target_missing",
                     "Relation target does not exist",
                     json!({"task_id": task.id, "target": relation.target}),
+                ));
+            }
+            if let (Some(config), Some(target)) = (
+                project.config.relations.get(&relation.kind),
+                tasks.iter().find(|other| other.id == relation.target),
+            ) && let Err(error) = check_relation_task_types(
+                &relation.kind,
+                config,
+                &task.task_type,
+                &target.task_type,
+                &task.id,
+                &target.id,
+            ) {
+                errors.push(problem(
+                    &error.code,
+                    &error.message,
+                    json!({"task_id": task.id, "relation_type": relation.kind, "target": relation.target}),
                 ));
             }
         }
@@ -2682,6 +3378,7 @@ mod tests {
         Task {
             schema_version: 1,
             id: id.into(),
+            task_type: "task".into(),
             header: id.into(),
             description: String::new(),
             acceptance_criteria: vec![],

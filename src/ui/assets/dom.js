@@ -207,6 +207,69 @@ export function formatDate(value, style = "short") {
   return new Intl.DateTimeFormat(undefined, options).format(date);
 }
 
+export function relativeTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return formatDate(value);
+}
+
+export function relativeTimeElement(value) {
+  return el("time", { datetime: value || "", text: relativeTime(value), title: formatDate(value, "long") });
+}
+
+// Paints a semantic colour through a custom property; CSP allows CSSOM writes, not style attributes.
+export function tint(node, color, property = "--tint") {
+  node.style.setProperty(property, color);
+  return node;
+}
+
+export function dot(color, className = "dot") {
+  return tint(el("span", { className, "aria-hidden": "true" }), color);
+}
+
+export function avatar(user, size = "md") {
+  const kind = user?.kind || "none";
+  const label = user ? (user.name || user.id) : "Unassigned";
+  return el("span", {
+    className: `avatar avatar-${size} ${kind === "agent" ? "is-agent" : ""} ${user ? "" : "is-empty"}`.trim(),
+    title: user ? `${label} · ${kind}` : label,
+    "aria-hidden": "true",
+    text: user ? initialsOf(label) : "—",
+  });
+}
+
+function initialsOf(name) {
+  const words = String(name).trim().split(/[\s._-]+/).filter(Boolean);
+  if (words.length > 1) return (words[0][0] + words[1][0]).toUpperCase();
+  return String(words[0] || "?").slice(0, 2).toUpperCase();
+}
+
+// Two-to-four option segmented control rendered as a radio-like button group.
+export function segmented(label, options, selected, onPick) {
+  const group = el("div", { className: "segmented", role: "group", "aria-label": label });
+  for (const option of options) {
+    const active = option.value === selected;
+    group.append(el("button", {
+      type: "button", className: `segment ${option.mono ? "mono" : ""}`.trim(), "aria-pressed": String(active),
+      text: option.label, onclick: () => onPick(option.value),
+    }));
+  }
+  return group;
+}
+
+export function panelLabel(text, note = null) {
+  return el("div", { className: "panel-label" }, el("h2", { text }), note);
+}
+
 export function timeElement(value, style = "short") {
   return el("time", { datetime: value || "", text: formatDate(value, style), title: value || "" });
 }

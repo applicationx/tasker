@@ -1,74 +1,97 @@
 import {
-  badge, button, el, emptyState, id, labeledField, pageHeader, revisionBadge, sectionHeading,
-  selectControl, setupTabs, tagList, timeElement,
+  avatar, button, dot, el, id, labeledField, panelLabel, relativeTime, relativeTimeElement, segmented,
+  selectControl, tagList, timeElement, tint,
 } from "../dom.js";
 import {
-  assigneeName, normalizeTaskDetail, stateEntries, stateLabel, usersFrom, workflowFrom,
+  decisionsFrom, normalizeTaskDetail, resourcesFrom, stateColor, stateConfig, stateLabel, taskRecord,
+  userFrom, usersFrom, workflowFrom,
 } from "../model.js";
 import { decisionHref, projectHref, resourceHref, taskHref } from "../router.js";
 import {
-  dirtyForm, metadataList, mutationUnavailable, parseTags, statusBadge, submitMutation,
-  tagsInputValue,
+  dirtyForm, mutationUnavailable, parseTags, statusBadge, submitMutation, tagsInputValue, typePill,
 } from "./shared.js";
+
+const CONTEXT_COLORS = { context: "var(--cool)", progress: "var(--accent)", decision: "var(--ok)" };
 
 export async function renderTask(ctx) {
   const value = await ctx.api.task(ctx.prefix, ctx.route.entityId, { signal: ctx.signal });
   const { task, status } = normalizeTaskDetail(value, ctx.snapshot, ctx.route.entityId);
   if (!task) throw { code: "task_not_found", message: `${ctx.route.entityId} was not found.` };
 
-  const users = usersFrom(ctx.snapshot);
-  const root = el("div", {},
-    pageHeader(
-      task.id,
-      task.header,
-      task.description || "No task description.",
-      [revisionBadge(task.revision), el("a", { className: "button", href: `${taskHref(ctx.prefix, task.id)}/brief`, text: "Open agent brief" })],
+  let mode = ctx.route.query.get("tab") === "working" ? "working" : "document";
+  const description = descriptionPanel(ctx, task);
+  const criteria = acceptancePanel(ctx, task, status);
+  const links = linksPanel(ctx, task);
+  const context = contextPanel(ctx, task);
+  const main = el("div", { className: "detail-main" });
+  const layout = el("div", { className: "detail-layout" }, main, rail(ctx, task, status));
+
+  const arrange = () => {
+    layout.classList.toggle("working", mode === "working");
+    description.querySelector(".description")?.classList.toggle("compact", mode === "working");
+    main.replaceChildren(...(mode === "working" ? [criteria, description, links, context] : [description, criteria, links, context]));
+  };
+  const toggle = segmented("Task layout", [
+    { value: "document", label: "Document" }, { value: "working", label: "Working" },
+  ], mode, (next) => {
+    mode = next;
+    for (const segment of toggle.querySelectorAll("button")) segment.setAttribute("aria-pressed", String(segment.textContent.toLowerCase() === mode));
+    arrange();
+    window.history.replaceState(null, "", `${taskHref(ctx.prefix, task.id)}${mode === "working" ? "?tab=working" : ""}`);
+  });
+  arrange();
+
+  return el("div", {},
+    el("div", { className: "detail-toolbar" },
+      el("a", { className: "button ghost", href: projectHref(ctx.prefix, "tasks"), text: "← Tasks" }),
+      el("span", { className: "spacer" }),
+      toggle,
     ),
+    el("div", { className: "detail-title" },
+      el("span", { className: "identifier", text: task.id }),
+      typePill(task),
+      el("h1", { text: task.header, tabindex: "-1", dataset: { routeHeading: "true" } }),
+    ),
+    stateRow(ctx, task, status),
+    mutationUnavailable(ctx),
+    layout,
   );
-
-  const tabsId = id("task-tabs");
-  const documentTab = el("button", { className: "tab", type: "button", role: "tab", id: `${tabsId}-document-tab`, "aria-controls": `${tabsId}-document`, text: "Document" });
-  const workingTab = el("button", { className: "tab", type: "button", role: "tab", id: `${tabsId}-working-tab`, "aria-controls": `${tabsId}-working`, text: "Working" });
-  const documentPanel = el("section", { className: "tab-panel", role: "tabpanel", id: `${tabsId}-document`, "aria-labelledby": documentTab.id });
-  const workingPanel = el("section", { className: "tab-panel", role: "tabpanel", id: `${tabsId}-working`, "aria-labelledby": workingTab.id });
-
-  documentPanel.append(contentEditor(ctx, task), referencesPanel(ctx, task));
-  workingPanel.append(
-    statePanel(ctx, task, status),
-    assignmentPanel(ctx, task, users),
-    acceptancePanel(ctx, task),
-    contextPanel(ctx, task),
-  );
-
-  const tabs = el("div", { className: "tabs", role: "tablist", "aria-label": "Task detail sections" }, documentTab, workingTab);
-  const rail = el("aside", { className: "card metadata-rail", "aria-label": "Task metadata" },
-    metadataList([
-      ["State", statusBadge(ctx.snapshot, task.state)],
-      ["Assignee", assigneeName(ctx.snapshot, task.assignee)],
-      ["Revision", revisionBadge(task.revision)],
-      ["Created", task.created_at ? timeElement(task.created_at) : "—"],
-      ["Created by", task.created_by || "—"],
-      ["Updated", task.updated_at ? timeElement(task.updated_at) : "—"],
-      ["Updated by", task.updated_by || "—"],
-      ["Tags", tagList(task.tags) || "—"],
-    ]),
-  );
-  root.append(el("div", { className: "detail-layout" },
-    el("div", { className: "detail-main" }, tabs, documentPanel, workingPanel),
-    rail,
-  ));
-  setupTabs(root, ctx.route.query.get("tab") === "working" ? 1 : 0);
-  return root;
 }
 
-function contentEditor(ctx, task) {
+function stateRow(ctx, task, status) {
+  const workflow = workflowFrom(ctx.snapshot);
+  const current = stateConfig(ctx.snapshot, task.state);
+  const allowed = Array.isArray(status.allowed_transitions) ? status.allowed_transitions : workflow.transitions?.[task.state] || [];
+  const remaining = status.acceptance_criteria_remaining?.length ?? (task.acceptance_criteria || []).filter((item) => !item.completed).length;
+  const container = el("div", {});
+  const row = el("div", { className: "state-row" },
+    tint(el("span", { className: "state-current", text: stateLabel(ctx.snapshot, task.state) }), stateColor(ctx.snapshot, task.state)),
+    allowed.length ? el("span", { className: "state-arrow", "aria-hidden": "true", text: "→" }) : null,
+    allowed.map((target) => {
+      const gated = remaining > 0 && stateConfig(ctx.snapshot, target).dependency_satisfied;
+      const label = `${current.terminal ? "reopen to " : ""}${stateLabel(ctx.snapshot, target)}`;
+      return el("button", {
+        type: "button", className: "transition-chip", text: gated ? `${label} ✕` : label,
+        disabled: !ctx.actor() || gated,
+        title: gated ? `${remaining} acceptance ${remaining === 1 ? "criterion is" : "criteria are"} still unchecked` : `Transition to ${stateLabel(ctx.snapshot, target)}`,
+        onclick: () => submitMutation(ctx, container, {
+          operation: "task.transition", task_id: task.id, if_revision: task.revision, target_state: target,
+        }, { target_state: target }, `Task transitioned to ${stateLabel(ctx.snapshot, target)}.`),
+      });
+    }),
+    el("span", { className: "spacer" }),
+    el("span", { className: "revision-badge", text: `rev ${task.revision ?? "—"}` }),
+    el("a", { className: "button primary", href: `${taskHref(ctx.prefix, task.id)}/brief`, text: "Agent brief" }),
+  );
+  container.append(row);
+  return container;
+}
+
+function descriptionPanel(ctx, task) {
   const header = el("input", { type: "text", value: task.header, required: true, maxlength: "500" });
   const description = el("textarea", { text: task.description || "", rows: "8" });
   const tags = el("input", { type: "text", value: tagsInputValue(task.tags), placeholder: "frontend, urgent" });
-  const form = el("form", { className: "card form-card" },
-    el("h2", { text: "Task content" }),
-    el("p", { className: "panel-intro", text: "Edit the task document, then save all three fields together. There is no autosave." }),
-    mutationUnavailable(ctx),
+  const form = el("form", {},
     el("div", { className: "form-grid" },
       labeledField("Header", header, { full: true }),
       labeledField("Description", description, { full: true, hint: "Describe what must be done. Keep measurable checkpoints in acceptance criteria." }),
@@ -88,50 +111,200 @@ function contentEditor(ctx, task) {
       operation: "task.update", task_id: task.id, if_revision: task.revision, patch: fields,
     }, fields, "Task content saved.");
   });
-  return form;
+  return el("section", { className: "panel", "aria-label": "Description" },
+    panelLabel("Description"),
+    el("p", { className: `description ${task.description ? "" : "empty"}`.trim(), text: task.description || "No description yet." }),
+    el("details", { className: "editor" }, el("summary", {}, el("span", { className: "sr-only", text: "Edit task content" })), form),
+  );
 }
 
-function statePanel(ctx, task, status) {
-  const workflow = workflowFrom(ctx.snapshot);
-  const allowed = Array.isArray(status.allowed_transitions)
-    ? status.allowed_transitions
-    : workflow.transitions?.[task.state] || [];
-  const target = selectControl(allowed.map((state) => ({ value: state, label: stateLabel(ctx.snapshot, state) })), allowed[0] || "", { disabled: !allowed.length });
-  const form = el("form", { className: "card quick-panel" },
-    el("h2", { text: "State" }),
-    el("p", { className: "panel-intro", text: "Only configured transitions are available. Tasker revalidates dependencies and acceptance criteria on save." }),
-    mutationUnavailable(ctx),
-    el("div", { className: "list-meta" }, el("span", { text: "Current" }), statusBadge(ctx.snapshot, task.state)),
-    allowed.length
-      ? el("div", { className: "form-grid" }, labeledField("Transition to", target))
-      : el("p", { className: "muted", text: "No transitions are currently allowed." }),
-    allowed.length ? el("div", { className: "form-actions" },
-      button("Apply transition", { kind: "submit", className: "button primary", disabled: !ctx.actor() }),
-      el("span", { className: "form-status", dataset: { formStatus: "true" } }),
-    ) : null,
+function acceptancePanel(ctx, task, status) {
+  const criteria = Array.isArray(task.acceptance_criteria) ? task.acceptance_criteria : [];
+  const done = criteria.filter((item) => item.completed).length;
+  const remaining = criteria.length - done;
+  const panel = el("section", { className: "panel", "aria-label": "Acceptance criteria" },
+    panelLabel("Acceptance criteria", el("span", { className: "panel-note", text: criteria.length ? `${done} / ${criteria.length} · ${remaining} left` : "none" })),
   );
+  if (criteria.length) {
+    panel.append(el("ul", { className: "criteria-list" }, criteria.map((criterion) => el("li", {},
+      el("button", {
+        type: "button", className: "criterion", "aria-pressed": String(Boolean(criterion.completed)), disabled: !ctx.actor(),
+        "aria-label": `${criterion.completed ? "Reopen" : "Complete"} ${criterion.id}: ${criterion.text}`,
+        onclick: () => submitMutation(ctx, panel, {
+          operation: "task.acceptance.set", task_id: task.id, criterion_id: criterion.id,
+          completed: !criterion.completed, if_revision: task.revision,
+        }, { criterion_id: criterion.id, completed: !criterion.completed }, criterion.completed ? "Criterion reopened." : "Criterion completed."),
+      },
+      el("span", { className: "check-box", "aria-hidden": "true", text: criterion.completed ? "✓" : "" }),
+      el("span", { className: "criterion-copy" },
+        el("span", { className: "criterion-text", text: criterion.text }),
+        el("span", { className: "criterion-meta", text: criterion.completed
+          ? `${criterion.id}  ·  ${criterion.completed_by || "unknown"} · ${relativeTime(criterion.completed_at)}`
+          : criterion.id }),
+      )),
+      button("Remove", {
+        className: "text-button", disabled: !ctx.actor(), "aria-label": `Remove ${criterion.id}`,
+        onclick: async () => {
+          if (!window.confirm(`Remove ${criterion.id}? Criterion text cannot be recovered from the task file.`)) return;
+          await submitMutation(ctx, panel, {
+            operation: "task.acceptance.remove", task_id: task.id, criterion_id: criterion.id, if_revision: task.revision,
+          }, { criterion_id: criterion.id }, "Criterion removed.");
+        },
+      }),
+    ))));
+  } else {
+    panel.append(el("p", { className: "empty-line", text: "No acceptance criteria yet." }));
+  }
+  const gate = Object.entries(workflowFrom(ctx.snapshot).states || {}).find(([key, config]) => config.dependency_satisfied && (status.allowed_transitions || []).includes(key));
+  if (remaining > 0 && gate) {
+    panel.append(el("div", { className: "notice accent inline", text: `Cannot move to ${gate[1].label || gate[0]} — ${remaining} ${remaining === 1 ? "criterion" : "criteria"} still unchecked.` }));
+  }
+
+  const text = el("input", { type: "text", required: true, placeholder: "Add a measurable completion checkpoint…", "aria-label": "New acceptance criterion" });
+  const addForm = el("form", { className: "inline-form spaced" }, text,
+    button("Add", { kind: "submit", className: "button", disabled: !ctx.actor() }),
+  );
+  dirtyForm(addForm, ctx);
+  addForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await submitMutation(ctx, addForm, {
+      operation: "task.acceptance.add", task_id: task.id, text: text.value.trim(), if_revision: task.revision,
+    }, { text: text.value }, "Criterion added.");
+  });
+  panel.append(addForm);
+  return panel;
+}
+
+function linksPanel(ctx, task) {
+  const dependencies = Array.isArray(task.dependencies) ? task.dependencies : [];
+  const relations = Array.isArray(task.relations) ? task.relations : [];
+  const rows = [
+    ...dependencies.map((target) => ({ kind: "depends on", target })),
+    ...relations.map((relation) => ({ kind: relation.type || relation.kind || "relates", target: relation.target })),
+  ];
+  return el("section", { className: "panel", "aria-label": "Dependencies and relations" },
+    panelLabel("Dependencies & relations"),
+    rows.length ? el("ul", { className: "link-list" }, rows.map(({ kind, target }) => {
+      const other = taskRecord(ctx.snapshot, target)?.task;
+      return el("li", {}, el("a", { className: "link-row", href: taskHref(ctx.prefix, target) },
+        el("span", { className: "link-kind", text: kind }),
+        el("span", { className: "identifier", text: target }),
+        el("span", { className: "row-title", text: other?.header || "Missing task" }),
+        other ? statusBadge(ctx.snapshot, other.state) : null,
+      ));
+    })) : el("p", { className: "empty-line", text: "No dependencies or relations. Add them with the Tasker CLI." }),
+  );
+}
+
+function contextPanel(ctx, task) {
+  const entries = Array.isArray(task.context) ? task.context : [];
+  const kind = selectControl([
+    { value: "context", label: "Context" }, { value: "progress", label: "Progress" }, { value: "decision", label: "Decision" },
+  ], "progress", { "aria-label": "Entry kind" });
+  const message = el("input", { type: "text", required: true, placeholder: "Append context, progress or a decision…", "aria-label": "Context message" });
+  const form = el("form", { className: "inline-form" }, kind, message,
+    button("Append", { kind: "submit", className: "button", disabled: !ctx.actor() }),
+  );
+  dirtyForm(form, ctx);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     await submitMutation(ctx, form, {
-      operation: "task.transition", task_id: task.id, if_revision: task.revision, target_state: target.value,
-    }, { target_state: target.value }, `Task transitioned to ${stateLabel(ctx.snapshot, target.value)}.`);
+      operation: "task.context.append", task_id: task.id, kind: kind.value,
+      message: message.value.trim(), if_revision: task.revision,
+    }, { kind: kind.value, message: message.value }, "Context appended.");
   });
-  return form;
+  return el("section", { className: "panel", "aria-label": "Task context" },
+    panelLabel("Task context", el("span", { className: "field-hint", text: "append-only" })),
+    entries.length ? el("ol", { className: "context-timeline" }, entries.map((entry) => {
+      const color = CONTEXT_COLORS[entry.kind] || "var(--muted)";
+      return el("li", { className: "context-entry" },
+        el("div", { className: "context-rail", "aria-hidden": "true" }, dot(color)),
+        el("div", { className: "context-body" },
+          el("div", { className: "context-meta" },
+            tint(el("span", { className: "context-kind", text: entry.kind || "context" }), color),
+            el("span", { className: "identifier", text: entry.id || "" }),
+            el("span", { className: "who" }, `${entry.created_by || "unknown"} · `, relativeTimeElement(entry.created_at)),
+          ),
+          el("p", { text: entry.message }),
+        ),
+      );
+    })) : el("p", { className: "empty-line", text: "No context entries yet." }),
+    form,
+  );
 }
 
-function assignmentPanel(ctx, task, users) {
+function rail(ctx, task, status) {
+  const user = userFrom(ctx.snapshot, task.assignee);
+  const config = stateConfig(ctx.snapshot, task.state);
+  const computed = [
+    ["Dependency", status.dependency_blocked ? "blocked" : "ready", status.dependency_blocked ? "var(--bad)" : "var(--ok)"],
+    ["Claimable", status.claimable ? "yes" : "no", status.claimable ? "var(--ok)" : null],
+    ["Terminal", config.terminal ? "yes" : "no", null],
+    ["Satisfies dependents", config.dependency_satisfied ? "yes" : "no", null],
+  ];
+  const references = Array.isArray(task.context_refs) ? task.context_refs : [];
+  const knowledge = new Map([...resourcesFrom(ctx.snapshot), ...decisionsFrom(ctx.snapshot)].map((item) => [item.id, item]));
+  return el("aside", { className: "detail-rail", "aria-label": "Task metadata" },
+    el("section", { className: "panel rail-panel" },
+      el("div", { className: "rail-section" },
+        el("span", { className: "field-label", text: "Assignee" }),
+        el("span", { className: "rail-person" },
+          avatar(user, "md"),
+          el("span", {},
+            el("strong", { text: user ? user.name || user.id : "Unassigned" }),
+            el("small", { text: user ? `${user.id} · ${user.kind || "unknown"}` : "unassigned" }),
+          ),
+        ),
+        assignmentEditor(ctx, task),
+      ),
+      el("div", { className: "rail-section" },
+        el("span", { className: "field-label", text: "Computed" }),
+        computed.map(([label, value, color]) => el("span", { className: "computed" },
+          el("span", { text: label }),
+          color ? tint(el("span", { text: value }), color) : el("span", { text: value }),
+        )),
+      ),
+      el("div", { className: "rail-section" },
+        el("span", { className: "field-label", text: "Tags" }),
+        tagList(task.tags) || el("span", { className: "muted", text: "No tags" }),
+      ),
+      el("div", { className: "rail-section" },
+        el("span", { className: "field-label", text: "Record" }),
+        el("dl", { className: "rail-meta" },
+          el("dt", { text: "Created" }), el("dd", {}, timeElement(task.created_at)),
+          el("dt", { text: "by" }), el("dd", { text: task.created_by || "—" }),
+          el("dt", { text: "Updated" }), el("dd", {}, relativeTimeElement(task.updated_at)),
+          el("dt", { text: "by" }), el("dd", { text: task.updated_by || "—" }),
+        ),
+      ),
+    ),
+    el("section", { className: "panel", "aria-label": "Knowledge" },
+      panelLabel("Knowledge"),
+      references.length ? el("ul", { className: "rail-refs" }, references.map((reference) => {
+        const isDecision = reference.kind === "decision";
+        const record = knowledge.get(reference.id);
+        return el("li", {}, el("a", { href: isDecision ? decisionHref(ctx.prefix, reference.id) : resourceHref(ctx.prefix, reference.id) },
+          el("span", { text: record?.title || reference.id }),
+          tint(el("span", { text: `${reference.id} · ${reference.kind} · ${reference.role}` }), isDecision ? "var(--ok)" : "var(--cool)"),
+        ));
+      })) : el("p", { className: "field-hint", text: "No linked resources or decisions." }),
+    ),
+  );
+}
+
+function assignmentEditor(ctx, task) {
+  const users = usersFrom(ctx.snapshot);
   const choices = users.map((user) => ({ value: user.id, label: user.name ? `${user.name} (${user.id})` : user.id }));
   if (task.assignee && !choices.some((item) => item.value === task.assignee)) choices.unshift({ value: task.assignee, label: task.assignee });
-  const assignee = selectControl(choices, task.assignee || choices[0]?.value || "", { disabled: !choices.length });
-  const form = el("form", { className: "card quick-panel" },
-    el("h2", { text: "Assignment" }),
-    el("p", { className: "panel-intro", text: "Assign only an existing project user. Creating users remains a separate CLI action." }),
-    mutationUnavailable(ctx),
-    choices.length ? labeledField("Project user", assignee) : el("p", { className: "muted", text: "This project has no users." }),
+  if (!choices.length) return null;
+  const selectId = id("assignee");
+  const assignee = selectControl(choices, task.assignee || choices[0].value, { id: selectId });
+  const form = el("form", {},
+    el("label", { className: "sr-only", for: selectId, text: "Project user" }),
+    assignee,
     el("div", { className: "form-actions" },
-      choices.length ? button("Assign", { kind: "submit", className: "button primary", disabled: !ctx.actor() }) : null,
-      task.assignee ? button("Unassign", { className: "button", disabled: !ctx.actor(), dataset: { unassign: "true" } }) : null,
-      el("span", { className: "form-status", dataset: { formStatus: "true" } }),
+      button("Assign", { kind: "submit", className: "button", disabled: !ctx.actor() }),
+      task.assignee ? button("Unassign", { className: "button ghost", disabled: !ctx.actor(), dataset: { unassign: "true" } }) : null,
     ),
   );
   form.addEventListener("submit", async (event) => {
@@ -145,125 +318,5 @@ function assignmentPanel(ctx, task, users) {
       operation: "task.unassign", task_id: task.id, if_revision: task.revision,
     }, { assignee: null }, "Task unassigned.");
   });
-  return form;
-}
-
-function acceptancePanel(ctx, task) {
-  const criteria = Array.isArray(task.acceptance_criteria) ? task.acceptance_criteria : [];
-  const panel = el("section", { className: "card quick-panel" },
-    el("h2", { text: "Acceptance criteria" }),
-    el("p", { className: "panel-intro", text: "Checkboxes commit one criterion at a time. Criterion text is immutable; replace it by removing and adding." }),
-    mutationUnavailable(ctx),
-  );
-  if (!criteria.length) panel.append(el("p", { className: "muted", text: "No acceptance criteria." }));
-  else {
-    const list = el("ul", { className: "criteria-list" });
-    for (const criterion of criteria) {
-      const checkboxId = id("criterion");
-      const checkbox = el("input", { id: checkboxId, type: "checkbox", checked: criterion.completed, disabled: !ctx.actor() });
-      const row = el("li", {},
-        checkbox,
-        el("div", { className: "criterion-copy" },
-          el("label", { for: checkboxId, text: criterion.text }),
-          el("span", { className: "criterion-meta", text: criterion.completed_at ? `${criterion.id} · completed by ${criterion.completed_by || "unknown"}` : criterion.id }),
-        ),
-        button("Remove", { className: "text-button", disabled: !ctx.actor(), "aria-label": `Remove ${criterion.id}`, dataset: { removeCriterion: criterion.id } }),
-      );
-      checkbox.addEventListener("change", async () => {
-        const desired = checkbox.checked;
-        checkbox.checked = !desired;
-        await submitMutation(ctx, panel, {
-          operation: "task.acceptance.set", task_id: task.id, criterion_id: criterion.id,
-          completed: desired, if_revision: task.revision,
-        }, { criterion_id: criterion.id, completed: desired }, desired ? "Criterion completed." : "Criterion reopened.");
-      });
-      row.querySelector("[data-remove-criterion]").addEventListener("click", async () => {
-        if (!window.confirm(`Remove ${criterion.id}? Criterion text cannot be recovered from the task file.`)) return;
-        await submitMutation(ctx, panel, {
-          operation: "task.acceptance.remove", task_id: task.id, criterion_id: criterion.id, if_revision: task.revision,
-        }, { criterion_id: criterion.id }, "Criterion removed.");
-      });
-      list.append(row);
-    }
-    panel.append(list);
-  }
-  const text = el("input", { type: "text", required: true, placeholder: "A measurable completion checkpoint" });
-  const addForm = el("form", {}, labeledField("New criterion", text),
-    el("div", { className: "form-actions" },
-      button("Add criterion", { kind: "submit", className: "button", disabled: !ctx.actor() }),
-      el("span", { className: "form-status", dataset: { formStatus: "true" } }),
-    ),
-  );
-  dirtyForm(addForm, ctx);
-  addForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await submitMutation(ctx, addForm, {
-      operation: "task.acceptance.add", task_id: task.id, text: text.value.trim(), if_revision: task.revision,
-    }, { text: text.value }, "Criterion added.");
-  });
-  panel.append(addForm);
-  return panel;
-}
-
-function contextPanel(ctx, task) {
-  const entries = Array.isArray(task.context) ? task.context : [];
-  const kind = selectControl([
-    { value: "context", label: "Context" }, { value: "progress", label: "Progress" }, { value: "decision", label: "Decision" },
-  ]);
-  const message = el("textarea", { required: true, rows: "5", placeholder: "Add durable context for the next agent or collaborator…" });
-  const form = el("form", { className: "card quick-panel" },
-    el("h2", { text: "Context timeline" }),
-    el("p", { className: "panel-intro", text: "Entries are append-only and cannot be edited or deleted." }),
-    entries.length ? el("ol", { className: "timeline" }, entries.map((entry) => el("li", {},
-      el("div", { className: "timeline-meta" }, badge(entry.kind || "context", 1), ` ${entry.id || ""} · ${entry.created_by || "unknown"} · `, timeElement(entry.created_at)),
-      el("p", { text: entry.message }),
-    ))) : el("p", { className: "muted", text: "No context entries yet." }),
-    mutationUnavailable(ctx),
-    el("div", { className: "form-grid" },
-      labeledField("Entry kind", kind),
-      labeledField("Message", message, { full: true }),
-    ),
-    el("div", { className: "form-actions" },
-      button("Append context", { kind: "submit", className: "button primary", disabled: !ctx.actor() }),
-      el("span", { className: "form-status", dataset: { formStatus: "true" } }),
-    ),
-  );
-  dirtyForm(form, ctx);
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await submitMutation(ctx, form, {
-      operation: "task.context.append", task_id: task.id, kind: kind.value,
-      message: message.value.trim(), if_revision: task.revision,
-    }, { kind: kind.value, message: message.value }, "Context appended.");
-  });
-  return form;
-}
-
-function referencesPanel(ctx, task) {
-  const dependencies = Array.isArray(task.dependencies) ? task.dependencies : [];
-  const relations = Array.isArray(task.relations) ? task.relations : [];
-  const references = Array.isArray(task.context_refs) ? task.context_refs : [];
-  return el("section", { className: "card card-body" },
-    sectionHeading("Connections", "Read-only in the Web UI"),
-    el("div", { className: "grid grid-3" },
-      connectionGroup("Dependencies", dependencies.length ? dependencies.map((dependency) => el("li", {}, el("a", { href: taskHref(ctx.prefix, dependency), text: dependency }))) : []),
-      connectionGroup("Relations", relations.length ? relations.map((relation) => el("li", {},
-        el("a", { href: taskHref(ctx.prefix, relation.target), text: relation.target }),
-        el("span", { className: "muted", text: relation.type || relation.kind }),
-      )) : []),
-      connectionGroup("Knowledge", references.length ? references.map((reference) => {
-        const isDecision = reference.kind === "decision" || /-D\d+$/.test(reference.id);
-        return el("li", {},
-          el("a", { href: isDecision ? decisionHref(ctx.prefix, reference.id) : resourceHref(ctx.prefix, reference.id), text: reference.id }),
-          el("span", { className: "muted", text: reference.role || reference.kind }),
-        );
-      }) : []),
-    ),
-  );
-}
-
-function connectionGroup(title, items) {
-  return el("div", {}, el("h3", { text: title }), items.length
-    ? el("ul", { className: "compact-list" }, items)
-    : el("p", { className: "muted", text: "None" }));
+  return el("details", { className: "editor" }, el("summary", {}, el("span", { className: "field-hint", text: "Change assignment" })), form);
 }

@@ -613,6 +613,15 @@ fn every_command_level_has_agent_discoverable_help() {
         "search decisions",
         "changelog",
         "validate",
+        "type",
+        "type list",
+        "type add",
+        "skill",
+        "skill show",
+        "skill install",
+        "init",
+        "root",
+        "mcp",
     ];
     for command in commands {
         let output = Command::new(bin())
@@ -653,7 +662,11 @@ fn every_command_level_has_agent_discoverable_help() {
         ("relation remove", "derived views"),
         ("search tasks", "QUERY is optional"),
         ("changelog", "task.transitioned"),
-        ("transition", "Unresolved dependencies do not prohibit"),
+        ("transition", "dependencies_unsatisfied"),
+        ("relation", "blocked_by and blocks are reserved"),
+        ("type", "source_types/target_types"),
+        ("skill install", "skill_exists"),
+        ("mcp", "mcp_servers.tasker"),
         ("validate", "never creates"),
     ];
     for (command, expected) in checks {
@@ -705,4 +718,795 @@ fn help_and_machine_errors_are_agent_discoverable() {
     let result: Value = serde_json::from_slice(&invalid.stderr).unwrap();
     assert_eq!(result["valid"], false);
     assert_eq!(result["errors"][0]["code"], "malformed_project_config");
+}
+
+/// Runs tasker in `dir` with an isolated configuration directory and no
+/// TASKER_ROOT unless one is given, so workspace discovery and the registry
+/// are exercised without touching real user configuration.
+fn run_workspace(dir: &Path, config: &Path, root: Option<&Path>, args: &[&str]) -> Output {
+    isolate_home_root(config, &config.join("no-home-board"));
+    let mut command = Command::new(bin());
+    command
+        .args(args)
+        .current_dir(dir)
+        .env("TASKER_ACTOR", "tester")
+        .env("TASKER_CONFIG_DIR", config)
+        .env_remove("TASKER_ROOT")
+        .env_remove("TASKER_PROJECT");
+    if let Some(root) = root {
+        command.env("TASKER_ROOT", root);
+    }
+    command.output().unwrap()
+}
+
+/// Points the home board (config projects_root) at `home` unless a test
+/// already configured it, so a real ~/tasker never leaks into a test.
+fn isolate_home_root(config: &Path, home: &Path) {
+    let file = config.join("config.toml");
+    if !file.exists() {
+        std::fs::create_dir_all(config).unwrap();
+        std::fs::write(&file, format!("projects_root = '{}'\n", home.display())).unwrap();
+    }
+}
+
+fn ok_workspace(dir: &Path, config: &Path, root: Option<&Path>, args: &[&str]) -> Value {
+    let output = run_workspace(dir, config, root, args);
+    assert!(
+        output.status.success(),
+        "command {:?} in {} failed: {}",
+        args,
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn same_path(left: &str, right: &Path) -> bool {
+    Path::new(left).canonicalize().unwrap() == right.canonicalize().unwrap()
+}
+
+#[test]
+fn workspace_board_is_discovered_initialized_and_listed() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let repo = temp.path().join("repo");
+    let nested = repo.join("src").join("deep");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("tasker")).unwrap();
+    std::fs::create_dir_all(&nested).unwrap();
+    let board = repo.join(".tasker");
+
+    // A Git repository or an undotted tasker folder never selects a root.
+    let shown = ok_workspace(&nested, &config, None, &["config", "show", "-o", "json"]);
+    assert_ne!(shown["root_source"], "workspace");
+
+    // init creates .tasker at the Git top level, ignores transient files,
+    // registers the board, and creates the first project.
+    let init = ok_workspace(
+        &nested,
+        &config,
+        None,
+        &["init", "--name", "Demo", "--prefix", "DEM", "-o", "json"],
+    );
+    assert_eq!(init["created"], true);
+    assert_eq!(init["gitignore"], true);
+    assert_eq!(init["registered"], true);
+    assert_eq!(init["project"]["prefix"], "DEM");
+    assert!(same_path(init["root"].as_str().unwrap(), &board));
+    let gitignore = std::fs::read_to_string(board.join(".gitignore")).unwrap();
+    assert!(gitignore.contains(".tasker-root.lock"));
+    assert!(gitignore.contains(".tasker-transactions/"));
+    let again = ok_workspace(
+        &repo,
+        &config,
+        None,
+        &["init", "--name", "Demo", "--prefix", "DEM", "-o", "json"],
+    );
+    assert_eq!(again["created"], false);
+    assert_eq!(again["gitignore"], false);
+    assert_eq!(again["registered"], false);
+    assert_eq!(again["project"]["prefix"], "DEM");
+
+    // Every directory inside the repository resolves the same board.
+    for dir in [repo.clone(), nested.clone(), board.join("demo")] {
+        let shown = ok_workspace(&dir, &config, None, &["config", "show", "-o", "json"]);
+        assert_eq!(shown["root_source"], "workspace", "from {}", dir.display());
+        assert!(same_path(shown["projects_root"].as_str().unwrap(), &board));
+    }
+    let task = ok_workspace(
+        &nested,
+        &config,
+        None,
+        &["create", "task", "Local task", "-p", "DEM", "-o", "json"],
+    );
+    assert_eq!(task["id"], "DEM-1");
+    assert!(board.join("demo/tasks/DEM-1.json").is_file());
+
+    // TASKER_ROOT still takes precedence over the workspace board.
+    let other = temp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let shown = ok_workspace(
+        &nested,
+        &config,
+        Some(&other),
+        &["config", "show", "-o", "json"],
+    );
+    assert_eq!(shown["root_source"], "env");
+    assert!(same_path(shown["projects_root"].as_str().unwrap(), &other));
+
+    // Elsewhere, bare `tasker list` shows the current root plus the board.
+    let listed = ok_workspace(&other, &config, Some(&other), &["list", "-o", "json"]);
+    let boards = listed["boards"].as_array().unwrap();
+    assert_eq!(boards.len(), 2);
+    assert_eq!(boards[0]["current"], true);
+    assert_eq!(boards[0]["source"], "env");
+    assert_eq!(boards[1]["source"], "registry");
+    assert_eq!(boards[1]["projects"][0]["prefix"], "DEM");
+    let stats = ok_workspace(
+        &other,
+        &config,
+        Some(&other),
+        &["list", "--stats", "-o", "json"],
+    );
+    assert_eq!(stats["boards"][1]["projects"][0]["stats"]["backlog"], 1);
+
+    // Inside the repository the board is current and not duplicated.
+    let listed = ok_workspace(&nested, &config, None, &["list", "-o", "json"]);
+    let boards = listed["boards"].as_array().unwrap();
+    assert_eq!(boards.len(), 1);
+    assert_eq!(boards[0]["source"], "workspace");
+    assert_eq!(boards[0]["registered"], true);
+}
+
+#[test]
+fn board_registry_round_trips_and_tolerates_missing_roots() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let current = temp.path().join("current");
+    let gone = temp.path().join("gone");
+    std::fs::create_dir_all(&current).unwrap();
+    std::fs::create_dir_all(&gone).unwrap();
+    let gone_text = gone.to_string_lossy().to_string();
+    let root = Some(current.as_path());
+
+    let added = ok_workspace(
+        &current,
+        &config,
+        root,
+        &["root", "add", &gone_text, "-o", "json"],
+    );
+    assert_eq!(added["added"], true);
+    let repeated = ok_workspace(
+        &current,
+        &config,
+        root,
+        &["root", "add", &gone_text, "-o", "json"],
+    );
+    assert_eq!(repeated["added"], false);
+    let missing = run_workspace(
+        &current,
+        &config,
+        root,
+        &["root", "add", "absent", "-o", "json"],
+    );
+    assert_eq!(missing.status.code(), Some(2));
+
+    let registered = added["root"].as_str().unwrap().to_string();
+    std::fs::remove_dir(&gone).unwrap();
+    let roots = ok_workspace(&current, &config, root, &["root", "list", "-o", "json"]);
+    assert_eq!(roots[0]["root"], registered.as_str());
+    assert_eq!(roots[0]["exists"], false);
+
+    let listed = ok_workspace(&current, &config, root, &["list", "-o", "json"]);
+    assert_eq!(listed["boards"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["warnings"][0]["code"], "registered_root_missing");
+
+    let removed = ok_workspace(
+        &current,
+        &config,
+        root,
+        &["root", "remove", &registered, "-o", "json"],
+    );
+    assert_eq!(removed["removed"], true);
+    let roots = ok_workspace(&current, &config, root, &["root", "list", "-o", "json"]);
+    assert!(roots.as_array().unwrap().is_empty());
+}
+
+#[test]
+fn competing_registry_writers_keep_every_root() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let dirs: Vec<_> = (0..8)
+        .map(|n| {
+            let dir = temp.path().join(format!("board-{n}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        })
+        .collect();
+    let children: Vec<_> = dirs
+        .iter()
+        .map(|dir| {
+            Command::new(bin())
+                .args(["root", "add", &dir.to_string_lossy(), "-o", "json"])
+                .env("TASKER_CONFIG_DIR", &config)
+                .env("TASKER_ROOT", temp.path())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+    let root = Some(temp.path());
+    let roots = ok_workspace(temp.path(), &config, root, &["root", "list", "-o", "json"]);
+    assert_eq!(roots.as_array().unwrap().len(), dirs.len());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_workspace_folder_is_ignored() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let real = temp.path().join("real");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(&repo).unwrap();
+    std::os::unix::fs::symlink(&real, repo.join(".tasker")).unwrap();
+    let shown = ok_workspace(&repo, &config, None, &["config", "show", "-o", "json"]);
+    assert_ne!(shown["root_source"], "workspace");
+}
+
+fn fail(root: &Path, args: &[&str]) -> (Option<i32>, Value) {
+    let output = run(root, args);
+    assert!(
+        !output.status.success(),
+        "command {args:?} unexpectedly succeeded"
+    );
+    (
+        output.status.code(),
+        serde_json::from_slice(&output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn task_types_are_configurable_and_constrain_relations() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    create_project(root);
+    let project = ok(root, &["get", "project", "DEM", "-o", "json"]);
+    assert_eq!(project["default_task_type"], "task");
+    for name in ["task", "story", "bug", "question", "test_case"] {
+        assert!(project["task_types"][name]["label"].is_string(), "{name}");
+    }
+
+    let story = ok(
+        root,
+        &[
+            "create", "task", "Login", "-p", "DEM", "--type", "story", "-o", "json",
+        ],
+    );
+    assert_eq!(story["type"], "story");
+    let plain = ok(
+        root,
+        &["create", "task", "Plain", "-p", "DEM", "-o", "json"],
+    );
+    assert_eq!(plain["type"], "task");
+    let (code, error) = fail(
+        root,
+        &[
+            "create", "task", "Nope", "-p", "DEM", "--type", "epic", "-o", "json",
+        ],
+    );
+    assert_eq!(code, Some(5));
+    assert_eq!(error["error"]["code"], "unknown_task_type");
+
+    // New types are added under the lock and become usable immediately.
+    let added = ok(
+        root,
+        &[
+            "type", "add", "epic", "-p", "DEM", "--label", "Epic", "-o", "json",
+        ],
+    );
+    assert_eq!(added["task_types"]["epic"]["label"], "Epic");
+    let (code, error) = fail(root, &["type", "add", "epic", "-p", "DEM", "-o", "json"]);
+    assert_eq!(code, Some(4));
+    assert_eq!(error["error"]["code"], "task_type_exists");
+    ok(
+        root,
+        &[
+            "create", "task", "Big", "-p", "DEM", "--type", "epic", "-o", "json",
+        ],
+    );
+    let types = ok(root, &["type", "list", "-p", "DEM", "-o", "json"]);
+    let epic = types
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "epic")
+        .unwrap();
+    assert_eq!(epic["task_count"], 1);
+
+    // Filtering and summaries expose the type.
+    let stories = ok(
+        root,
+        &[
+            "list", "tasks", "-p", "DEM", "--type", "story", "-o", "json",
+        ],
+    );
+    assert_eq!(stories.as_array().unwrap().len(), 1);
+    assert_eq!(stories[0]["type"], "story");
+
+    // Restrict subtask_of to test_case/task children of stories.
+    let config_path = root.join("demo/tasker.yaml");
+    let yaml = std::fs::read_to_string(&config_path).unwrap();
+    let yaml = yaml.replacen(
+        "    acyclic: true\n",
+        "    acyclic: true\n    source_types:\n    - test_case\n    - task\n    target_types:\n    - story\n",
+        1,
+    );
+    std::fs::write(&config_path, yaml).unwrap();
+    ok(root, &["validate", "-p", "DEM", "-o", "json"]);
+
+    let case = ok(
+        root,
+        &[
+            "create",
+            "task",
+            "Happy path",
+            "-p",
+            "DEM",
+            "--type",
+            "test_case",
+            "--parent",
+            "DEM-1",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(case["relations"][0]["type"], "subtask_of");
+    assert_eq!(case["relations"][0]["target"], "DEM-1");
+    let (code, error) = fail(
+        root,
+        &[
+            "create", "task", "Wrong", "-p", "DEM", "--type", "bug", "--parent", "DEM-1", "-o",
+            "json",
+        ],
+    );
+    assert_eq!(code, Some(5));
+    assert_eq!(error["error"]["code"], "relation_type_mismatch");
+    let (_, error) = fail(
+        root,
+        &[
+            "relation",
+            "add",
+            "DEM-2",
+            "subtask_of",
+            "DEM-3",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(error["error"]["code"], "relation_type_mismatch");
+
+    // Changing a type re-checks relations that touch the task.
+    let (_, error) = fail(
+        root,
+        &["update", "task", "DEM-1", "--type", "bug", "-o", "json"],
+    );
+    assert_eq!(error["error"]["code"], "relation_type_mismatch");
+    let (_, error) = fail(
+        root,
+        &["update", "task", "DEM-4", "--type", "bug", "-o", "json"],
+    );
+    assert_eq!(error["error"]["code"], "relation_type_mismatch");
+    let updated = ok(
+        root,
+        &["update", "task", "DEM-2", "--type", "bug", "-o", "json"],
+    );
+    assert_eq!(updated["type"], "bug");
+    let history = ok(
+        root,
+        &[
+            "changelog",
+            "--task",
+            "DEM-2",
+            "--action",
+            "task.updated",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(history[0]["changes"]["type"]["to"], "bug");
+
+    // Manual edits that orphan a type are caught by validate.
+    let task_path = root.join("demo/tasks/DEM-2.json");
+    let text = std::fs::read_to_string(&task_path).unwrap();
+    std::fs::write(
+        &task_path,
+        text.replace("\"type\": \"bug\"", "\"type\": \"ghost\""),
+    )
+    .unwrap();
+    let (code, result) = fail(root, &["validate", "-p", "DEM", "-o", "json"]);
+    assert_eq!(code, Some(5));
+    assert!(
+        result["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["code"] == "unknown_task_type")
+    );
+}
+
+#[test]
+fn legacy_tasks_without_type_read_as_default() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    create_project(root);
+    ok(root, &["create", "task", "Old", "-p", "DEM", "-o", "json"]);
+    let task_path = root.join("demo/tasks/DEM-1.json");
+    let text = std::fs::read_to_string(&task_path).unwrap();
+    std::fs::write(&task_path, text.replace("  \"type\": \"task\",\n", "")).unwrap();
+    // Legacy project config: no task_types at all.
+    let config_path = root.join("demo/tasker.yaml");
+    let yaml = std::fs::read_to_string(&config_path).unwrap();
+    let legacy = format!("{}\n", yaml.split("\ntask_types:").next().unwrap());
+    std::fs::write(&config_path, legacy).unwrap();
+    ok(root, &["validate", "-p", "DEM", "-o", "json"]);
+    assert_eq!(
+        ok(root, &["get", "task", "DEM-1", "-o", "json"])["type"],
+        "task"
+    );
+    let types = ok(root, &["type", "list", "-p", "DEM", "-o", "json"]);
+    assert_eq!(types.as_array().unwrap().len(), 1);
+    assert_eq!(types[0]["task_count"], 1);
+}
+
+#[test]
+fn blocked_by_and_blocks_gate_claims_and_transitions() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    create_project(root);
+    ok(
+        root,
+        &[
+            "create", "task", "Story", "-p", "DEM", "--type", "story", "-o", "json",
+        ],
+    );
+    // A question created with --blocks blocks the existing story.
+    let question = ok(
+        root,
+        &[
+            "create",
+            "task",
+            "Which DB?",
+            "-p",
+            "DEM",
+            "--type",
+            "question",
+            "--blocks",
+            "DEM-1",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(question["id"], "DEM-2");
+    let story = ok(root, &["get", "task", "DEM-1", "-o", "json"]);
+    assert_eq!(story["dependencies"], serde_json::json!(["DEM-2"]));
+    assert_eq!(story["revision"], 2);
+    let status = ok(root, &["status", "DEM-1", "-o", "json"]);
+    assert_eq!(status["dependency_blocked"], true);
+    assert_eq!(status["blocked_by"][0]["id"], "DEM-2");
+    assert_eq!(status["blocked_by"][0]["satisfied"], false);
+    assert_eq!(
+        ok(root, &["status", "DEM-2", "-o", "json"])["blocks"],
+        serde_json::json!(["DEM-1"])
+    );
+    let history = ok(
+        root,
+        &[
+            "changelog",
+            "--task",
+            "DEM-1",
+            "--action",
+            "task.dependency_added",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(history.as_array().unwrap().len(), 1);
+
+    // Blocked tasks cannot be started or completed; other states stay reachable.
+    let (code, error) = fail(root, &["transition", "DEM-1", "in_progress", "-o", "json"]);
+    assert_eq!(code, Some(5));
+    assert_eq!(error["error"]["code"], "dependencies_unsatisfied");
+    assert_eq!(
+        error["error"]["unresolved_dependencies"],
+        serde_json::json!(["DEM-2"])
+    );
+    ok(root, &["transition", "DEM-1", "blocked", "-o", "json"]);
+    ok(root, &["transition", "DEM-1", "backlog", "-o", "json"]);
+
+    // Relation aliases edit the same edge and are listed as derived rows.
+    ok(
+        root,
+        &["create", "task", "Infra", "-p", "DEM", "-o", "json"],
+    );
+    ok(
+        root,
+        &["relation", "add", "DEM-3", "blocks", "DEM-1", "-o", "json"],
+    );
+    let (_, error) = fail(
+        root,
+        &[
+            "relation",
+            "add",
+            "DEM-1",
+            "blocked_by",
+            "DEM-3",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(error["error"]["code"], "dependency_exists");
+    let relations = ok(root, &["relation", "list", "DEM-1", "-o", "json"]);
+    let kinds: Vec<_> = relations
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            format!(
+                "{} {}",
+                r["type"].as_str().unwrap(),
+                r["target"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert!(kinds.contains(&"blocked_by DEM-2".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"blocked_by DEM-3".to_string()), "{kinds:?}");
+    let incoming = ok(
+        root,
+        &[
+            "relation",
+            "list",
+            "DEM-3",
+            "--direction",
+            "incoming",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(incoming[0]["type"], "blocks");
+    assert_eq!(incoming[0]["target"], "DEM-1");
+    ok(
+        root,
+        &[
+            "relation",
+            "remove",
+            "DEM-1",
+            "blocked_by",
+            "DEM-3",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(
+        ok(root, &["dependency", "list", "DEM-1", "-o", "json"]),
+        serde_json::json!(["DEM-2"])
+    );
+
+    // --blocked-by on create, plus cycle rejection before anything is written.
+    let follow = ok(
+        root,
+        &[
+            "create",
+            "task",
+            "Follow-up",
+            "-p",
+            "DEM",
+            "--blocked-by",
+            "DEM-1",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(follow["dependencies"], serde_json::json!(["DEM-1"]));
+    let (code, error) = fail(
+        root,
+        &[
+            "create",
+            "task",
+            "Loop",
+            "-p",
+            "DEM",
+            "--blocked-by",
+            "DEM-4",
+            "--blocks",
+            "DEM-1",
+            "-o",
+            "json",
+        ],
+    );
+    assert_eq!(code, Some(6));
+    assert_eq!(error["error"]["code"], "dependency_cycle");
+    assert!(!root.join("demo/tasks/DEM-5.json").exists());
+    assert_eq!(
+        ok(root, &["get", "task", "DEM-1", "-o", "json"])["dependencies"],
+        serde_json::json!(["DEM-2"])
+    );
+    let (_, error) = fail(
+        root,
+        &[
+            "create", "task", "Ghost", "-p", "DEM", "--blocks", "DEM-99", "-o", "json",
+        ],
+    );
+    assert_eq!(error["error"]["code"], "task_not_found");
+
+    // Answering the question unblocks the story.
+    ok(root, &["claim", "DEM-2", "--as", "answerer", "-o", "json"]);
+    ok(root, &["transition", "DEM-2", "done", "-o", "json"]);
+    assert_eq!(
+        ok(root, &["status", "DEM-1", "-o", "json"])["claimable"],
+        true
+    );
+    ok(root, &["transition", "DEM-1", "in_progress", "-o", "json"]);
+    ok(root, &["validate", "-p", "DEM", "-o", "json"]);
+}
+
+#[test]
+fn concurrent_creates_blocking_one_task_keep_every_dependency() {
+    let temp = TempDir::new().unwrap();
+    create_project(temp.path());
+    ok(
+        temp.path(),
+        &["create", "task", "Target", "-p", "DEM", "-o", "json"],
+    );
+    let children: Vec<_> = (0..6)
+        .map(|n| {
+            Command::new(bin())
+                .args([
+                    "create",
+                    "task",
+                    &format!("Blocker {n}"),
+                    "-p",
+                    "DEM",
+                    "--blocks",
+                    "DEM-1",
+                    "-o",
+                    "json",
+                ])
+                .env("TASKER_ROOT", temp.path())
+                .env("TASKER_ACTOR", "tester")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    let mut ids = std::collections::BTreeSet::new();
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let task: Value = serde_json::from_slice(&output.stdout).unwrap();
+        ids.insert(task["id"].as_str().unwrap().to_string());
+    }
+    assert_eq!(ids.len(), 6);
+    let target = ok(temp.path(), &["get", "task", "DEM-1", "-o", "json"]);
+    let deps: std::collections::BTreeSet<String> = target["dependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(deps, ids);
+    assert_eq!(target["revision"], 7);
+    assert!(!temp.path().join("demo/.tasker-transactions").exists());
+    ok(temp.path(), &["validate", "-p", "DEM", "-o", "json"]);
+}
+
+#[test]
+fn root_flag_and_home_board_are_reachable_from_a_repository() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let home = temp.path().join("home-board");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    isolate_home_root(&config, &home);
+    ok_workspace(
+        &repo,
+        &config,
+        None,
+        &["init", "--name", "App", "--prefix", "APP", "-o", "json"],
+    );
+
+    // --root creates a project outside the repository board.
+    let home_text = home.to_string_lossy().to_string();
+    let created = ok_workspace(
+        &repo,
+        &config,
+        None,
+        &[
+            "--root", &home_text, "create", "project", "Notes", "--prefix", "NOTE", "-o", "json",
+        ],
+    );
+    assert!(home.join("notes/tasker.yaml").is_file(), "{created}");
+    let shown = ok_workspace(
+        &repo,
+        &config,
+        None,
+        &["--root", &home_text, "config", "show", "-o", "json"],
+    );
+    assert_eq!(shown["root_source"], "flag");
+
+    // From inside the repo, home projects resolve by prefix and task ID.
+    let task = ok_workspace(
+        &repo,
+        &config,
+        None,
+        &["create", "task", "Home note", "-p", "NOTE", "-o", "json"],
+    );
+    assert_eq!(task["id"], "NOTE-1");
+    assert_eq!(
+        ok_workspace(
+            &repo,
+            &config,
+            None,
+            &["get", "task", "NOTE-1", "-o", "json"]
+        )["header"],
+        "Home note"
+    );
+    ok_workspace(
+        &repo,
+        &config,
+        None,
+        &["create", "task", "Repo task", "-p", "APP", "-o", "json"],
+    );
+    assert!(repo.join(".tasker/app/tasks/APP-1.json").is_file());
+
+    // `tasker list` shows the repository board and the home board.
+    let listed = ok_workspace(&repo, &config, None, &["list", "-o", "json"]);
+    let boards = listed["boards"].as_array().unwrap();
+    assert_eq!(boards.len(), 2, "{listed}");
+    assert_eq!(boards[0]["source"], "workspace");
+    assert_eq!(boards[1]["source"], "config");
+    assert_eq!(boards[1]["projects"][0]["prefix"], "NOTE");
+
+    // TASKER_ROOT isolates: no lookup outside it.
+    let isolated = temp.path().join("isolated");
+    std::fs::create_dir_all(&isolated).unwrap();
+    let output = run_workspace(
+        &repo,
+        &config,
+        Some(&isolated),
+        &["list", "tasks", "-p", "NOTE", "-o", "json"],
+    );
+    assert_eq!(output.status.code(), Some(3));
+}
+
+#[test]
+fn skill_is_embedded_and_installs_idempotently() {
+    let temp = TempDir::new().unwrap();
+    let shown = ok(temp.path(), &["skill", "show", "-o", "json"]);
+    let text = shown.as_str().unwrap();
+    assert!(text.starts_with("---\nname: tasker\n"));
+    assert_eq!(text, include_str!("../skills/tasker/SKILL.md"));
+
+    let dir = temp.path().join("skills");
+    let dir_text = dir.to_string_lossy().to_string();
+    let args = [
+        "skill", "install", "--agent", "cursor", "--path", &dir_text, "-o", "json",
+    ];
+    let installed = ok(temp.path(), &args);
+    assert_eq!(installed["written"], true);
+    let path = dir.join("tasker/SKILL.md");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(ok(temp.path(), &args)["written"], false);
+
+    std::fs::write(&path, "custom").unwrap();
+    let (code, error) = fail(temp.path(), &args);
+    assert_eq!(code, Some(4));
+    assert_eq!(error["error"]["code"], "skill_exists");
+    let mut forced = args.to_vec();
+    forced.insert(2, "--force");
+    assert_eq!(ok(temp.path(), &forced)["replaced"], true);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }

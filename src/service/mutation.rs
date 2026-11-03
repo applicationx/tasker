@@ -329,6 +329,7 @@ fn transition_task(
     state: String,
 ) -> Result<(&'static str, Value, bool)> {
     crate::app::verify_transition(&project.config, &task.state, &state)?;
+    crate::app::verify_dependencies_for_target(project, task, &state)?;
     let remaining: Vec<String> = task
         .acceptance_criteria
         .iter()

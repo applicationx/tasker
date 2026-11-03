@@ -1,0 +1,16 @@
+{
+  "name": "tasker",
+  "owner": {
+    "name": "applicationx"
+  },
+  "metadata": {
+    "description": "Claude Code add-ons for the Tasker task manager."
+  },
+  "plugins": [
+    {
+      "name": "tasker-panel",
+      "source": "./claude-plugins/tasker-panel",
+      "description": "Live Tasker board beside the Claude Code chat, with a status-line summary of the claimed task."
+    }
+  ]
+}
